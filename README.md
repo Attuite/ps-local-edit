@@ -1,6 +1,19 @@
 # Photoshop 局部 AI 改图插件
 
-Photoshop 内的简洁 UXP 面板，通过 https://api.lk888.ai 调用生图模型，使用 PS 原生选区完成局部修改。
+Photoshop 内的简洁 UXP 面板，使用 PS 原生选区完成局部修改。本 Fork 由 Attuite 维护，保留 LK888 任务接口，并加入自定义 OpenAI 兼容图片编辑 API。
+
+## 自定义 API（Attuite 0.1.1）
+
+1. 打开「设置」，接口类型选择「OpenAI 兼容 · 图片编辑」。
+2. 填写服务的 Base URL（通常是 `https://你的服务/v1`）与自己的 API Key，点击「保存连接设置」。只填写域名会自动补 `/v1`；带自定义路径的地址按原样使用。
+3. 在「模型管理」输入服务支持的图像编辑模型 ID，点击「添加 / 更新」。也可从 API 刷新模型列表。
+4. 返回改图，选择该模型、清晰度与尺寸后生成。检查连接仅请求 `/models`，不提交生成任务。
+
+此模式使用 `POST <Base URL>/images/edits`，以 multipart 上传原始图片，支持同步返回的 `data[].b64_json` 或 HTTPS `data[].url`。单图字段是 `image`，多图字段是 `image[]`；服务需要支持相应格式。参考 [OpenAI 官方接口说明](https://developers.openai.com/api/reference/resources/images/methods/edit)。聊天、Responses、Gemini 原生和其他异步任务协议暂不支持；LK888 可继续选择原有模式。
+
+每张结果单独请求一次，最多 4 张。同步生成在后台进行，最长等待 5 分钟；网络中断或 PS 退出后不能查询该同步请求，须先到服务平台核对，避免重复计费。已返回的图片保留在历史记录。API 地址和模型列表保存本机，密钥按接口类型和地址分别存入 UXP secureStorage；历史任务保留提交时的地址，切换服务不会把旧任务或旧密钥发送给新地址。远程地址要求 HTTPS，本机 localhost 可用 HTTP。
+
+OpenAI 模式的尺寸是模型输出尺寸，回填仍按原选区尺寸缩放并使用原蒙版。更换接口后，应重新选择适用的清晰度与尺寸。默认模型只是示例，是否可用以你配置的服务为准。
 
 ## 功能
 
@@ -15,11 +28,11 @@ Photoshop 内的简洁 UXP 面板，通过 https://api.lk888.ai 调用生图模�
 
 ## 安装
 
-需要 Photoshop 25.0 或更新版本。目前本机 Photoshop 27.6 已加载，用户已进行实际生成与图层回填；不同宿主和模型仍需自行验证。
+需要 Photoshop 25.1 或更新版本。上游作者报告 Photoshop 27.6 已加载并完成实际生成与图层回填；该报告不代表本 Fork 的验证结果。不同宿主和模型仍需自行验证。
 
-1. 尝试双击 `dist/局部改图-LK888-0.1.0.ccx` 使用 Creative Cloud 安装。
+1. 尝试双击 `dist/局部改图-Attuite-0.1.1.ccx` 使用 Creative Cloud 安装。
 2. 若本地 CCX 无法安装，通过 Adobe UXP Developer Tool 添加 `plugin/manifest.json`，点击 Load。
-3. 在 PS 增效工具中打开面板，进入设置填写并保存自己的 LK888 API Key。
+3. 在 PS 增效工具中打开面板，进入设置选择接口，填写并保存自己的 API 地址和 Key。
 4. 在 RGB 文档选择区域，点击更新选区，输入要求后生成。
 5. 生成完成后点击候选图添加图层。放大查看与添加操作分开。
 
@@ -30,7 +43,7 @@ Photoshop 内的简洁 UXP 面板，通过 https://api.lk888.ai 调用生图模�
 核心测试无需额外依赖，使用 Node.js 执行：
 
 ```sh
-node --test tests/api.test.cjs tests/panel.test.cjs tests/png.test.cjs
+node --test tests/*.test.cjs
 ```
 
 Windows 打包：
@@ -43,7 +56,7 @@ Windows 打包：
 
 ## 边界
 
-生成与添加图层分开。历史保存输入和结果，但导入时必须回到原文档，画布尺寸变化会阻止自动导入。输入图片和提示词发送到 LK888；图片下载不附带 API Key。原选区蒙版限制显示区域，模型可能改变区域内构图。输入 PNG 无损编码，结果保存模型原始文件；回填缩放和模型输出分辨率仍会影响显示细节。
+生成与添加图层分开。历史保存输入和结果，但导入时必须回到原文档，画布尺寸变化会阻止自动导入。输入图片和提示词发送到设置中保存的 API 服务；图片下载不附带 API Key。原选区蒙版限制显示区域，模型可能改变区域内构图。输入 PNG 无损编码，结果保存模型原始文件；回填缩放和模型输出分辨率仍会影响显示细节。
 
 ## 来源与许可
 

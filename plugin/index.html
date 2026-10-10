@@ -3,9 +3,10 @@
 <div id="page-tabs" class="editor-toolbar"><sp-action-button id="refresh-selection">更新选区</sp-action-button><div class="toolbar-spacer"></div><div class="history-anchor"><sp-action-button id="tab-tasks">历史记录</sp-action-button><div id="history-list" style="display:none"></div></div><sp-action-button id="settings-toggle">设置</sp-action-button></div>
 <section id="settings" style="display:none">
 <div class="row"><strong>连接设置</strong><sp-action-button id="back-editor" quiet>返回改图</sp-action-button></div>
-<label>LK888 API Key</label><input id="api-key" type="password" placeholder="输入后保存到本机" autocomplete="off">
-<div class="row"><sp-action-button id="save-key">保存密钥</sp-action-button><sp-action-button id="test-key">检查连接</sp-action-button></div><p class="hint">https://api.lk888.ai</p>
-<label>其他模型 ID</label><input id="custom-model" placeholder="平台提供的准确模型 ID">
+<label>接口类型</label><sp-dropdown id="api-protocol"><sp-menu slot="options"><sp-menu-item value="lk888" selected>LK888 任务接口</sp-menu-item><sp-menu-item value="openai">OpenAI 兼容 · 图片编辑</sp-menu-item></sp-menu></sp-dropdown>
+<label>Base URL</label><input id="api-base" placeholder="https://你的服务地址/v1" autocomplete="off">
+<label>API Key</label><input id="api-key" type="password" placeholder="首次填写；留空保留该地址已有密钥" autocomplete="off">
+<div class="row"><sp-action-button id="save-key">保存连接设置</sp-action-button><sp-action-button id="test-key">检查已保存连接</sp-action-button></div><p id="api-hint" class="hint"></p>
 <label>模型管理</label><sp-action-button id="refresh-models">从 API 刷新模型</sp-action-button><p class="hint">接口返回的模型可能包含聊天模型，请选择支持改图的模型。</p><input id="model-id" placeholder="模型 ID"><input id="model-label" placeholder="显示名称（可选）"><div class="row"><sp-action-button id="add-model">添加 / 更新</sp-action-button><sp-action-button id="delete-model">删除该 ID</sp-action-button></div><p id="models-status" class="hint"></p><sp-checkbox id="reset-confirm">已在平台确认旧任务，可以结束记录</sp-checkbox><sp-action-button id="restore-result">上次结果</sp-action-button><sp-action-button id="reset-job">结束当前任务记录</sp-action-button></section>
 <section id="editor">
 <div id="selection-gate" class="gate"><p id="selection-hint">在 PS 框选或套索选中一个区域。</p><sp-button id="capture-selection">局部改图 · 读取选区</sp-button></div>

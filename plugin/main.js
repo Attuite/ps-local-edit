@@ -2,7 +2,7 @@ const { app, imaging, constants, action } = require('photoshop');
 const { storage, shell } = require('uxp');
 const ps = require('./modules/ps');
 const fileUtils = require('./modules/fs');
-const { MODELS, MediaClient, imageSources, unwrap } = require('./api');
+const { MODELS, MediaClient, imageSources, unwrap, DEFAULT_CONNECTION, normalizeConnection, connectionKey } = require('./api');
 const { TaskQueue }=require('./task-queue');
 const { pngRGBA }=require('./png');
 let queue=null, pageName='edit', selectedJobId=null, historyOpen=false;
@@ -11,9 +11,20 @@ async function newDraft(){await saveCurrent();const number=Math.max(0,...queue.j
 const fs = storage.localFileSystem;
 let capture = null, reference = null, busy = false, initialized = false;
 let job = null;
-let pauseRequested=false, modelList=MODELS.slice();
+let pauseRequested=false, modelList=MODELS.slice(), connection={...DEFAULT_CONNECTION};
+function modelStorageKey(){return connectionKey(connection)==='lk888-key'?'lk888-models':'models:'+connectionKey(connection);}
+function hiddenModelsKey(){return connectionKey(connection)==='lk888-key'?'lk888-hidden-models':'hidden-models:'+connectionKey(connection);}
+function renderDropdown(id,items){const node=$(id),selected=node.value;if(!document.createElement)return;node.innerHTML='';const menu=document.createElement('sp-menu');menu.setAttribute('slot','options');items.forEach(([value,label])=>{const item=document.createElement('sp-menu-item');item.setAttribute('value',value);item.textContent=label;if(value===selected)item.setAttribute('selected','');menu.appendChild(item);});node.appendChild(menu);node.value=items.some(item=>item[0]===selected)?selected:items[0][0];}
+function loadConnectionModels(){
+ modelList=connection.protocol==='openai'?[{id:'gpt-image-1.5',label:'GPT Image 1.5'}]:MODELS.slice();
+ try{const saved=JSON.parse(localStorage.getItem(modelStorageKey())||'null');if(Array.isArray(saved)&&saved.length)modelList=saved;}catch(_){}
+ renderModels();
+ renderDropdown('quality',connection.protocol==='openai'?[['auto','模型默认'],['low','低'],['medium','中'],['high','高']]:[['auto','模型默认'],['1K','1K'],['2K','2K'],['4K','4K']]);
+ renderDropdown('output-size',connection.protocol==='openai'?[['auto','模型默认 · 原选区回填'],['1024x1024','1024 × 1024'],['1536x1024','1536 × 1024'],['1024x1536','1024 × 1536']]:[['original','匹配原图选区'],['1:1','正方形 · 1:1'],['4:3','横图 · 4:3'],['3:4','竖图 · 3:4'],['16:9','横图 · 16:9'],['9:16','竖图 · 9:16']]);
+}
+function connectionHint(){const openai=$('api-protocol').value==='openai';$('api-hint').textContent=openai?'需支持 POST /images/edits（同步图片编辑），Base URL 通常以 /v1 结尾。保存后生效；在下方添加你的图像模型。':'使用 LK888 的 /v1/media/generate 任务接口。保存后生效。';}
 function renderModels(){const node=$('model');if(!document.createElement)return;const selected=node.value;node.innerHTML='';const menu=document.createElement('sp-menu');menu.setAttribute('slot','options');modelList.forEach(model=>{const item=document.createElement('sp-menu-item');item.setAttribute('value',model.id);item.textContent=model.label || model.id;if(model.id===selected)item.setAttribute('selected','');menu.appendChild(item);});node.appendChild(menu);node.value=modelList.some(m=>m.id===selected)?selected:(modelList[0]||{}).id;$('models-status').textContent='已保存 '+modelList.length+' 个模型。';}
-function saveModels(){localStorage.setItem('lk888-models',JSON.stringify(modelList));renderModels();}
+function saveModels(){localStorage.setItem(modelStorageKey(),JSON.stringify(modelList));renderModels();}
 let references = [], sourceImage = null, settingsOpen = false;
 function syncInputs(){const view=$('input-webview');if(view.postMessage)view.postMessage(JSON.stringify({type:'state',source:sourceImage?{data:sourceImage,name:capture.bounds.width+' × '+capture.bounds.height}:null,references,prompt:$('prompt').value,busy}));}
 function archiveCompleted(){if(job && job.source && job.state!=='uncertain'){localStorage.setItem('lk888-last-result',JSON.stringify(job));job=null;saveJob();}}
@@ -38,11 +49,11 @@ function refresh() {
   $('reset-job').disabled = busy;
   syncInputs();
 }
-async function key() {
-  try { const value = await storage.secureStorage.getItem('lk888-key'); return String.fromCharCode(...value); }
+async function key(config=connection) {
+  try { const value = await storage.secureStorage.getItem(connectionKey(config)); return String.fromCharCode(...value); }
   catch (_) { throw new Error('请在设置中填写并保存 API Key。'); }
 }
-async function client() { return new MediaClient(await key()); }
+async function client(config=connection) { return new MediaClient(await key(config),fetch,config,fileUtils.base64ToArrayBuffer); }
 async function withBusy(fn) {
   if (busy) return; busy = true; refresh();
   try { await fn(); } catch (error) { status(error.message || '操作失败，请检查设置后重试。', true); }
@@ -85,10 +96,11 @@ async function generate(){
  if(!capture || !sourceImage)await readSelection();$('prompt').value=prompt;
  if(!app.activeDocument || app.activeDocument.id!==capture.context.documentId)throw new Error('请读取当前文档选区。');
  const model=$('model').value || modelList[0]?.id;if(!model)throw new Error('请选择模型。');
- const params={},quality=$('quality').value||'auto',ratio=$('output-size').value||'original';if(quality!=='auto')params.image_size=quality;if(ratio!=='original')params.aspect_ratio=ratio;
+ const params={},quality=$('quality').value||'auto',ratio=$('output-size').value||(connection.protocol==='openai'?'auto':'original');if(connection.protocol==='openai'){if(!['auto','low','medium','high'].includes(quality)||!['auto','1024x1024','1536x1024','1024x1536'].includes(ratio))throw new Error('此历史记录使用其他接口参数，请重新选择清晰度和尺寸。');params.quality=quality;params.size=ratio;}else{if(!['auto','1K','2K','4K'].includes(quality)||!['original','1:1','4:3','3:4','16:9','9:16'].includes(ratio))throw new Error('此历史记录使用其他接口参数，请重新选择清晰度和尺寸。');if(quality!=='auto')params.image_size=quality;if(ratio!=='original')params.aspect_ratio=ratio;}
  const existing=queue.jobs.find(j=>j.id===selectedJobId);const id=existing?.state==='draft'?existing.id:'region-'+Date.now(),region=capture.context.originalBounds,b=capture.bounds;
  await snapshot(id);
  const record={id,title:existing?.state==='draft'?existing.title:'局部改图 '+(Math.max(0,...queue.jobs.map(j=>j.number||0))+1),number:existing?.state==='draft'?existing.number:Math.max(0,...queue.jobs.map(j=>j.number||0))+1,quality,ratio,model,prompt,count:Math.max(1,Math.min(4,parseInt($('count').value||'1',10)||1)),createdAt:Date.now(),captureWidth:b.width,captureHeight:b.height,captureRef:id,tasks:[],state:'submitting',instruction:'编辑图片1，保持画面尺寸、构图与主体位置。修改范围相对像素坐标：'+[region.left-b.left,region.top-b.top,region.right-b.left,region.bottom-b.top].map(Math.round).join(',')+'。其余图片按编号作为参考。修改要求：'+prompt};
+ record.connection={...connection};
  await queue.submit(record,[sourceImage,...references.map(r=>r.data)],params);
  selectedJobId=id;syncInputs();show('selection-gate',false);navigatePage('edit');status('已提交。下方显示生成状态；点击新建改图可以继续修改其他区域。');queue.tick();
 }
@@ -164,18 +176,18 @@ async function init() {
     } catch (_) {}
   }
   $('prompt').value = localStorage.getItem('lk888-prompt') || '';
-  $('custom-model').value = localStorage.getItem('lk888-custom-model') || '';
-  try {const saved=JSON.parse(localStorage.getItem('lk888-models')||'null');if(Array.isArray(saved)&&saved.length)modelList=saved;}catch(_){}
-  renderModels();
+  try{connection=normalizeConnection(JSON.parse(localStorage.getItem('api-connection')||'null')||DEFAULT_CONNECTION);}catch(_){connection={...DEFAULT_CONNECTION};}
+  $('api-protocol').value=connection.protocol;$('api-base').value=connection.baseUrl;connectionHint();loadConnectionModels();
+  $('api-protocol').addEventListener('change',()=>{const base=$('api-base').value.trim();if(!base || ['https://api.lk888.ai','https://api.openai.com/v1'].includes(base))$('api-base').value=$('api-protocol').value==='openai'?'https://api.openai.com/v1':DEFAULT_CONNECTION.baseUrl;connectionHint();});
   $('pause-wait').addEventListener('click',()=>{pauseRequested=true;status('正在暂停等待，原任务会保留。');});
-  $('refresh-models').addEventListener('click',()=>withBusy(async()=>{const items=await (await client()).models();if(!items.length)throw new Error('API 返回的模型列表为空，已保留现有列表。');const deleted=JSON.parse(localStorage.getItem('lk888-hidden-models')||'[]');const map=new Map(modelList.map(m=>[m.id,m]));items.forEach(m=>{if(!deleted.includes(m.id))map.set(m.id,m);});modelList=Array.from(map.values());saveModels();status('已从 API 读取 '+items.length+' 个模型。模型是否支持改图以平台实际响应为准。');}));
-  $('add-model').addEventListener('click',()=>{const id=$('model-id').value.trim();if(!id){status('请填写模型 ID。',true);return;}const label=$('model-label').value.trim()||id;modelList=modelList.filter(m=>m.id!==id);modelList.push({id,label});const hidden=JSON.parse(localStorage.getItem('lk888-hidden-models')||'[]').filter(m=>m!==id);localStorage.setItem('lk888-hidden-models',JSON.stringify(hidden));saveModels();status('已添加模型 '+label);});
-  $('delete-model').addEventListener('click',()=>{const id=$('model-id').value.trim();if(!id)return;if(modelList.length===1){status('至少保留一个模型。',true);return;}modelList=modelList.filter(m=>m.id!==id);const hidden=JSON.parse(localStorage.getItem('lk888-hidden-models')||'[]');if(!hidden.includes(id))hidden.push(id);localStorage.setItem('lk888-hidden-models',JSON.stringify(hidden));saveModels();status('已删除该模型。');});
+  $('refresh-models').addEventListener('click',()=>withBusy(async()=>{const items=await (await client()).models();if(!items.length)throw new Error('API 返回的模型列表为空，已保留现有列表。');const deleted=JSON.parse(localStorage.getItem(hiddenModelsKey())||'[]');const map=new Map(modelList.map(m=>[m.id,m]));items.forEach(m=>{if(!deleted.includes(m.id))map.set(m.id,m);});modelList=Array.from(map.values());saveModels();status('已从 API 读取 '+items.length+' 个模型。模型是否支持改图以平台实际响应为准。');}));
+  $('add-model').addEventListener('click',()=>{const id=$('model-id').value.trim();if(!id){status('请填写模型 ID。',true);return;}const label=$('model-label').value.trim()||id;modelList=modelList.filter(m=>m.id!==id);modelList.push({id,label});const hidden=JSON.parse(localStorage.getItem(hiddenModelsKey())||'[]').filter(m=>m!==id);localStorage.setItem(hiddenModelsKey(),JSON.stringify(hidden));saveModels();status('已添加模型 '+label);});
+  $('delete-model').addEventListener('click',()=>{const id=$('model-id').value.trim();if(!id)return;if(modelList.length===1){status('至少保留一个模型。',true);return;}modelList=modelList.filter(m=>m.id!==id);const hidden=JSON.parse(localStorage.getItem(hiddenModelsKey())||'[]');if(!hidden.includes(id))hidden.push(id);localStorage.setItem(hiddenModelsKey(),JSON.stringify(hidden));saveModels();status('已删除该模型。');});
   let jobs=[];try{jobs=JSON.parse(localStorage.getItem('lk888-jobs')||'[]');}catch(_){}
   if(job && !jobs.some(j=>j.id==='legacy-'+job.createdAt)){
     const migrated={...job,id:'legacy-'+job.createdAt,captureRef:'selection',captureWidth:capture?.bounds.width||0,captureHeight:capture?.bounds.height||0,tasks:(job.tasks?.length?job.tasks:[{id:job.taskId,source:job.source}]).filter(t=>t.id).map(t=>({...t,state:t.source?'ready':'running',results:(t.sources|| (t.source?[t.source]:[])).map(source=>({source,imported:!!t.imported}))})),state:job.source?'ready':job.state};if(capture){await snapshot(migrated.id);migrated.captureRef=migrated.id;}jobs.unshift(migrated);localStorage.removeItem('lk888-job');job=null;
   }
-  queue=new TaskQueue({jobs,persist:value=>localStorage.setItem('lk888-jobs',JSON.stringify(value)),client,onChange:tasksUI});
+  queue=new TaskQueue({jobs,persist:value=>localStorage.setItem('lk888-jobs',JSON.stringify(value)),client,onChange:tasksUI});queue.save();
   $('tab-edit').addEventListener('click',()=>withBusy(newDraft));$('tab-tasks').addEventListener('click',()=>{historyOpen=!historyOpen;tasksUI();});
   const taskView=$('task-webview'),taskTarget=typeof window!=='undefined'?window:taskView;
   taskTarget.addEventListener('message',event=>{if(event.source && event.source!==taskView)return;let data=event.data;try{if(typeof data==='string')data=JSON.parse(data);}catch(_){return;}if(!data)return;if(data.type==='tasksReady'){console.log('LK888 history input ready');tasksUI();return;}if(data.type==='taskHeight'){if(taskView.style)taskView.style.height=Math.max(80,Math.min(500,Number(data.height)||200))+'px';return;}if(data.type==='openJob'){withBusy(()=>openHistory(data.jobId));return;}if(data.type==='deleteJob'){withBusy(async()=>{const record=queue.jobs.find(j=>j.id===data.jobId);queue.jobs=queue.jobs.filter(j=>j.id!==data.jobId);if(selectedJobId===data.jobId)selectedJobId=null;queue.save();if(record?.captureRef && /^(region|legacy)-/.test(record.captureRef)){const folder=await fs.getDataFolder();for(const ext of ['.json','.bin'])try{await(await folder.getEntry(record.captureRef+ext)).delete();}catch(_){}}status('已删除本机历史记录。已提交的平台任务不会因此取消。');});return;}if(data.type==='dimensions'){const result=queue.jobs.find(j=>j.id===data.jobId)?.tasks.find(t=>t.id===data.taskId)?.results[data.index];if(result && (result.width!==data.width || result.height!==data.height)){result.width=data.width;result.height=data.height;localStorage.setItem('lk888-jobs',JSON.stringify(queue.jobs));}return;}if(data.type==='query'){const record=queue.jobs.find(j=>j.id===data.jobId);if(record)record.tasks.filter(t=>t.state==='running').forEach(t=>queue.query(record,t));return;}if(['import','save','preview'].includes(data.type))withBusy(()=>candidateAction(data));});
@@ -208,11 +220,11 @@ async function init() {
   $('capture-selection').addEventListener('click', () => withBusy(readSelection));
   $('refresh-selection').addEventListener('click', () => withBusy(readSelection));
   $('save-key').addEventListener('click', () => withBusy(async () => {
-    const value = $('api-key').value.trim(); if (!value) throw new Error('请输入 API Key。');
-    await storage.secureStorage.setItem('lk888-key', value); $('api-key').value = ''; status('密钥已保存到本机安全存储。');
+    const config=normalizeConnection({protocol:$('api-protocol').value,baseUrl:$('api-base').value});
+    const value=$('api-key').value.trim();if(value)await storage.secureStorage.setItem(connectionKey(config),value);
+    connection=config;localStorage.setItem('api-connection',JSON.stringify(config));$('api-base').value=config.baseUrl;$('api-key').value='';loadConnectionModels();connectionHint();status(value?'连接已保存，密钥仅保存在本机安全存储。':'连接已保存。首次使用该地址时，请填写并保存它的 API Key。');
   }));
-  $('test-key').addEventListener('click', () => withBusy(async () => { await (await client()).balance(); status('接口鉴权成功。尚未提交生图任务。'); }));
-  $('custom-model').addEventListener('change', () => localStorage.setItem('lk888-custom-model', $('custom-model').value.trim()));
+  $('test-key').addEventListener('click', () => withBusy(async () => { await (await client()).balance(); status('已保存连接的鉴权请求成功，图片编辑能力需以生成结果为准。'); }));
   $('prompt').addEventListener('input', () => localStorage.setItem('lk888-prompt', $('prompt').value));
   $('generate').addEventListener('click', () => withBusy(generate));
   $('resume').addEventListener('click', () => withBusy(async () => { if (job.source) { if (capture && !job.imported) await importImage(); else status('结果已保留。点击保存结果下载图片。'); return; } await queue.tick(); }));
