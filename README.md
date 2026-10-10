@@ -32,6 +32,7 @@ OpenAI 模式的尺寸是模型输出尺寸，回填仍按原选区尺寸缩放�
 
 1. 尝试双击 `dist/局部改图-Attuite-0.1.1.ccx` 使用 Creative Cloud 安装。
 2. 若本地 CCX 无法安装，通过 Adobe UXP Developer Tool 添加 `plugin/manifest.json`，点击 Load。
+   若已安装 Adobe 官方 UXP CLI，也可运行 `./scripts/load-local.ps1`，或使用 `-UxpCommand` 指定 CLI 路径；Photoshop 必须启用开发模式并返回主界面。
 3. 在 PS 增效工具中打开面板，进入设置选择接口，填写并保存自己的 API 地址和 Key。
 4. 在 RGB 文档选择区域，点击更新选区，输入要求后生成。
 5. 生成完成后点击候选图添加图层。放大查看与添加操作分开。
