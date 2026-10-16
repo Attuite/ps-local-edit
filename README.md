@@ -2,6 +2,8 @@
 
 Photoshop 内的简洁 UXP 面板，使用 PS 原生选区完成局部修改。本 Fork 由 Attuite 维护，保留 LK888 任务接口，并加入自定义 OpenAI 兼容图片编辑 API。
 
+0.1.3 为整个面板增加纵向滚动条，长设置页及改图页均可向下滚动；面板高度随 Photoshop 面板大小调整。
+
 ## 耗时诊断（Attuite 0.1.2）
 
 正常使用时自动记录提交与每次状态查询的时间；「设置 → 导出耗时记录」可保存 JSON。「检查已有任务状态」只对最近一笔 LK888 历史任务发送一次 GET 查询，不提交生图，不覆盖历史图片或任务状态。没有 LK888 历史任务时不会发请求。
@@ -38,7 +40,7 @@ OpenAI 模式的尺寸是模型输出尺寸，回填仍按原选区尺寸缩放�
 
 需要 Photoshop 25.1 或更新版本。上游作者报告 Photoshop 27.6 已加载并完成实际生成与图层回填；该报告不代表本 Fork 的验证结果。不同宿主和模型仍需自行验证。
 
-1. 尝试双击 `dist/局部改图-Attuite-0.1.2.ccx` 使用 Creative Cloud 安装。
+1. 尝试双击 `dist/局部改图-Attuite-0.1.3.ccx` 使用 Creative Cloud 安装。
 2. 若本地 CCX 无法安装，通过 Adobe UXP Developer Tool 添加 `plugin/manifest.json`，点击 Load。
    若已安装 Adobe 官方 UXP CLI，也可运行 `./scripts/load-local.ps1`，或使用 `-UxpCommand` 指定 CLI 路径；Photoshop 必须启用开发模式并返回主界面。
 3. 在 PS 增效工具中打开面板，进入设置选择接口，填写并保存自己的 API 地址和 Key。
