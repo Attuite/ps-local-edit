@@ -26,7 +26,7 @@ function harness({ switchDocument = false, submissionFails = false } = {}) {
     if (name === 'photoshop') return { app, imaging: { encodeImageData: async () => 'YWJj' }, constants: { DocumentMode: { RGB: 'RGB' } } };
     if (name === 'uxp') return { storage };
     if (name === './modules/ps') return ps;
-    if(name==='./task-queue')return {TaskQueue};if(name==='./png')return {pngRGBA};
+    if(name==='./task-queue')return require('../plugin/task-queue');if(name==='./png')return {pngRGBA};
     if (name === './modules/fs') return { arrayBufferToBase64:v=>Buffer.from(v).toString('base64'), base64ToArrayBuffer: v => Uint8Array.from(Buffer.from(v, 'base64')).buffer };
     if (name === './api') return { ...api, MediaClient: Client };
     throw new Error(name);

@@ -49,9 +49,14 @@ class MediaClient {
     this.key = key; this.fetch = fetchImpl; this.connection = normalizeConnection(connection);
     this.base = this.connection.baseUrl; this.decodeImage = decodeImage;
   }
-  async request(path, body, multipart = false) {
+  async request(path, body, multipart = false, onTiming) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), multipart ? 300000 : 60000);
+    const startedAt = Date.now(), timeoutMs = multipart ? 300000 : 60000;
+    // Diagnostics must never interrupt a request or include its credentials/payload.
+    const trace = values => { if (onTiming) { try { onTiming({ ...values, at: Date.now() }); } catch (_) {} } };
+    trace({ phase: 'request-start', timeoutMs });
+    const timer = setTimeout(() => { trace({ phase: 'timeout', elapsedMs: Date.now() - startedAt }); controller.abort(); }, timeoutMs);
+    let stage = 'request';
     try {
       const response = await this.fetch(this.base + path, {
         method: body ? 'POST' : 'GET', signal: controller.signal,
@@ -59,14 +64,28 @@ class MediaClient {
         headers: { Authorization: 'Bearer ' + this.key, ...(!multipart ? { 'Content-Type': 'application/json' } : {}) },
         ...(body ? { body: multipart ? body : JSON.stringify(body) } : {})
       });
+      stage = 'body';
+      const cache = {};
+      for (const name of ['date', 'age', 'cache-control', 'x-cache', 'cf-cache-status', 'via']) {
+        const value = response.headers?.get(name);
+        if (value) cache[name] = String(value).slice(0, 160);
+      }
+      trace({ phase: 'headers', elapsedMs: Date.now() - startedAt, httpStatus: response.status, cache });
       let payload;
       try { payload = await response.json(); } catch (_) { throw new Error('平台返回了无法识别的响应。'); }
+      stage = 'response';
+      const data = unwrap(payload), state = data.state || payload.state;
+      trace({ phase: 'body', elapsedMs: Date.now() - startedAt,
+        serverState: ['pending', 'running', 'success', 'failed', 'error'].includes(state) ? state : 'other',
+        serverFinal: !!(data.is_final || payload.is_final) });
       if (!response.ok || payload.error) {
         const error = payload.error;
         throw new Error((error && (error.message || error.type)) || ('接口请求失败：' + response.status));
       }
       return payload;
     } catch (error) {
+      trace({ phase: 'error', elapsedMs: Date.now() - startedAt, stage,
+        errorType: controller.signal.aborted ? 'aborted' : ['AbortError', 'TypeError', 'SyntaxError', 'Error'].includes(error.name) ? error.name : 'other' });
       const phase = body ? '提交生图任务' : path.startsWith('/v1/media/status') ? '查询原任务' : '检查连接';
       if (/network|fetch|abort|timeout/i.test(error.message || '') || error.name === 'AbortError') {
         throw new Error(phase + '时网络连接失败或超时。' + (body ? '提交结果不确定，请到平台确认任务，勿重复生成。' : '可再次查询，不会重复提交生图任务。'));
@@ -74,7 +93,7 @@ class MediaClient {
       throw error;
     } finally { clearTimeout(timer); }
   }
-  async submit(model, prompt, images, params = {}) {
+  async submit(model, prompt, images, params = {}, onTiming) {
     if (this.connection.protocol === 'openai') {
       const form = new FormData();
       form.append('model', model); form.append('prompt', prompt); form.append('n', '1');
@@ -87,17 +106,17 @@ class MediaClient {
         const ext = match[1] === 'image/jpeg' ? 'jpg' : match[1].split('/')[1];
         form.append(images.length === 1 ? 'image' : 'image[]', new Blob([this.decodeImage(match[2])], { type: match[1] }), 'image-' + (index + 1) + '.' + ext);
       });
-      const payload = await this.request('/images/edits', form, true);
+      const payload = await this.request('/images/edits', form, true, onTiming);
       const results = imageSources({ data: payload.data });
       if (!results.length) throw new Error('接口没有返回图片。此模式需要同步返回 data[].b64_json 或 data[].url，不能使用聊天、Responses 或异步任务接口。请先核对平台记录，勿重复生成。');
       return { results };
     }
-    const payload = await this.request('/v1/media/generate', { model, prompt, params: { ...params, images } });
+    const payload = await this.request('/v1/media/generate', { model, prompt, params: { ...params, images } }, false, onTiming);
     const taskId = unwrap(payload).task_id || payload.task_id;
     if (!taskId) throw new Error('未收到任务编号。请先到平台确认任务，避免重复计费。');
     return String(taskId);
   }
-  async status(taskId) { return this.request('/v1/media/status?task_id=' + encodeURIComponent(taskId)); }
+  async status(taskId, onTiming) { return this.request('/v1/media/status?task_id=' + encodeURIComponent(taskId), undefined, false, onTiming); }
   async balance() { return this.connection.protocol === 'openai' ? this.models() : this.request('/api/v1/skills/balance'); }
   async models() {
     const payload = await this.request(this.connection.protocol === 'openai' ? '/models' : '/v1/models');
