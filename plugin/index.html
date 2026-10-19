@@ -1,6 +1,6 @@
 <!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>局部改图</title><link rel="stylesheet" href="panel.css"></head><body><main>
-<div class="tabs-bar"><div id="document-tabs" class="document-tabs"></div><sp-action-button id="tab-edit">＋ 新建改图</sp-action-button></div><strong id="panel-title" style="display:none">局部改图</strong>
-<div id="page-tabs" class="editor-toolbar"><sp-action-button id="refresh-selection">更新选区</sp-action-button><div class="toolbar-spacer"></div><div class="history-anchor"><sp-action-button id="tab-tasks">历史记录</sp-action-button><div id="history-list" style="display:none"></div></div><sp-action-button id="settings-toggle">设置</sp-action-button></div>
+<div class="tabs-bar"><sp-dropdown id="history-select" placeholder="历史记录" aria-label="历史记录"></sp-dropdown><sp-action-button id="tab-edit">＋ 新建改图</sp-action-button></div><strong id="panel-title" style="display:none">局部改图</strong>
+<div id="page-tabs" class="editor-toolbar"><sp-action-button id="refresh-selection">更新选区</sp-action-button><div class="toolbar-spacer"></div><sp-action-button id="settings-toggle">设置</sp-action-button></div>
 <section id="settings" style="display:none">
 <div class="row"><strong>连接设置</strong><sp-action-button id="back-editor" quiet>返回改图</sp-action-button></div>
 <label>接口类型</label><sp-dropdown id="api-protocol"><sp-menu slot="options"><sp-menu-item value="lk888" selected>LK888 任务接口</sp-menu-item><sp-menu-item value="openai">OpenAI 兼容 · 图片编辑</sp-menu-item></sp-menu></sp-dropdown>

@@ -49,3 +49,18 @@ test('candidate cannot be inserted into a different Photoshop document',async()=
 
 test('history restores prompt and generation options in the same editor',async()=>{const h=harness();await h.ready();h.nodes.quality.value='2K';h.nodes['output-size'].value='3:4';await h.nodes.generate.click();await h.ready();const record=JSON.parse(h.local.get('lk888-jobs'))[0];await h.nodes['tab-edit'].click();assert.equal(h.nodes.prompt.value,'');h.nodes['task-webview'].message({data:JSON.stringify({type:'openJob',jobId:record.id})});await h.ready();assert.equal(h.nodes.prompt.value,'改成红色');assert.equal(h.nodes.quality.value,'2K');assert.equal(h.nodes['output-size'].value,'3:4');assert.equal(h.nodes.editor.style.display,'block');assert.equal(h.nodes['panel-title'].textContent,'局部改图 1');});
 test('deleting history removes only the chosen local record',async()=>{const h=harness();await h.ready();await h.nodes.generate.click();await h.ready();const record=JSON.parse(h.local.get('lk888-jobs'))[0];h.nodes['task-webview'].message({data:JSON.stringify({type:'deleteJob',jobId:record.id})});await h.ready();assert.equal(JSON.parse(h.local.get('lk888-jobs')).length,0);assert.equal(h.requests.length,1);assert.equal(h.calls.length,0);});
+
+
+test('history dropdown saves the current draft and restores the chosen record without generation',async()=>{
+ const h=harness();await h.ready();await h.nodes['tab-edit'].click();
+ h.nodes.prompt.value='第一条修改';h.nodes.quality.value='2K';h.nodes['output-size'].value='3:4';
+ const first=JSON.parse(h.local.get('lk888-jobs'))[0];
+ await new Promise(resolve=>setTimeout(resolve,2));
+ await h.nodes['tab-edit'].click();h.nodes.prompt.value='第二条修改';
+ h.nodes['history-select'].value=first.id;await h.nodes['history-select'].change();
+ assert.equal(h.nodes['history-select'].value,first.id);
+ assert.equal(h.nodes.prompt.value,'第一条修改');assert.equal(h.nodes.quality.value,'2K');assert.equal(h.nodes['output-size'].value,'3:4');
+ const jobs=JSON.parse(h.local.get('lk888-jobs'));
+ assert.equal(jobs.length,2);assert.equal(jobs[0].prompt,'第二条修改');
+ assert.equal(h.requests.length,0);assert.equal(h.calls.length,0);
+});
