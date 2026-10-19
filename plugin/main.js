@@ -93,7 +93,8 @@ function tasksUI(){
  const signature=JSON.stringify(items),history=$('history-select');
  // Background polling must not rebuild an open history menu.
  if(signature!==historySignature){renderDropdown('history-select',items.length?items:[['','暂无历史记录']]);history.disabled=!queue.jobs.length;historySignature=signature;}
- if(history.value!==(selectedJobId||''))history.value=selectedJobId||'';
+ const selectedIndex=queue.jobs.findIndex(record=>record.id===selectedJobId);
+ if(history.selectedIndex!==selectedIndex)history.selectedIndex=selectedIndex;
  const node=$('task-webview');if(node.postMessage)node.postMessage(JSON.stringify({type:'jobs',selectedJobId,historyOpen:false,jobs:queue.jobs.map(({timing,...j})=>({...j,width:j.captureWidth,height:j.captureHeight,stateLabel:j.state==='ready'?'完成，点击图片添加图层':j.state==='uncertain'?'部分提交未确认，请到平台核对':j.state==='submitting'?'提交中':j.state==='failed'?'失败':'后台生成中'}))}));
  const selected=queue.jobs.find(j=>j.id===selectedJobId);$('panel-title').textContent=selected?.title||'局部改图';
 }
@@ -197,7 +198,13 @@ async function init() {
     const migrated={...job,id:'legacy-'+job.createdAt,captureRef:'selection',captureWidth:capture?.bounds.width||0,captureHeight:capture?.bounds.height||0,tasks:(job.tasks?.length?job.tasks:[{id:job.taskId,source:job.source}]).filter(t=>t.id).map(t=>({...t,state:t.source?'ready':'running',results:(t.sources|| (t.source?[t.source]:[])).map(source=>({source,imported:!!t.imported}))})),state:job.source?'ready':job.state};if(capture){await snapshot(migrated.id);migrated.captureRef=migrated.id;}jobs.unshift(migrated);localStorage.removeItem('lk888-job');job=null;
   }
   queue=new TaskQueue({jobs,persist:value=>localStorage.setItem('lk888-jobs',JSON.stringify(value)),client,onChange:tasksUI});queue.save();
-  $('tab-edit').addEventListener('click',()=>withBusy(newDraft));$('history-select').addEventListener('change',()=>{const id=$('history-select').value;$('history-select').value=selectedJobId||'';if(id&&id!==selectedJobId)return withBusy(()=>openHistory(id));});
+  $('tab-edit').addEventListener('click',()=>withBusy(newDraft));$('history-select').addEventListener('change',()=>{
+   const history=$('history-select');
+   // Native UXP dropdown selection is exposed by selectedIndex, not an assigned value.
+   const id=queue.jobs[history.selectedIndex]?.id;
+   history.selectedIndex=queue.jobs.findIndex(record=>record.id===selectedJobId);
+   if(id&&id!==selectedJobId)return withBusy(()=>openHistory(id));
+  });
   const taskView=$('task-webview'),taskTarget=typeof window!=='undefined'?window:taskView;
   taskTarget.addEventListener('message',event=>{if(event.source && event.source!==taskView)return;let data=event.data;try{if(typeof data==='string')data=JSON.parse(data);}catch(_){return;}if(!data)return;if(data.type==='tasksReady'){console.log('LK888 history input ready');tasksUI();return;}if(data.type==='taskHeight'){if(taskView.style)taskView.style.height=Math.max(80,Math.min(500,Number(data.height)||200))+'px';return;}if(data.type==='openJob'){withBusy(()=>openHistory(data.jobId));return;}if(data.type==='deleteJob'){withBusy(async()=>{const record=queue.jobs.find(j=>j.id===data.jobId);queue.jobs=queue.jobs.filter(j=>j.id!==data.jobId);if(selectedJobId===data.jobId)selectedJobId=null;queue.save();if(record?.captureRef && /^(region|legacy)-/.test(record.captureRef)){const folder=await fs.getDataFolder();for(const ext of ['.json','.bin'])try{await(await folder.getEntry(record.captureRef+ext)).delete();}catch(_){}}status('已删除本机历史记录。已提交的平台任务不会因此取消。');});return;}if(data.type==='dimensions'){const result=queue.jobs.find(j=>j.id===data.jobId)?.tasks.find(t=>t.id===data.taskId)?.results[data.index];if(result && (result.width!==data.width || result.height!==data.height)){result.width=data.width;result.height=data.height;localStorage.setItem('lk888-jobs',JSON.stringify(queue.jobs));}return;}if(data.type==='query'){const record=queue.jobs.find(j=>j.id===data.jobId);if(record)record.tasks.filter(t=>t.state==='running').forEach(t=>queue.query(record,t));return;}if(['import','save','preview'].includes(data.type))withBusy(()=>candidateAction(data));});
   if(typeof setInterval!=='undefined')setInterval(()=>queue.tick(),POLL_INTERVAL_MS);

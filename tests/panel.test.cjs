@@ -7,7 +7,7 @@ const {TaskQueue}=require('../plugin/task-queue');const {pngRGBA}=require('../pl
 
 function harness({ switchDocument = false, submissionFails = false } = {}) {
   const nodes = {}, local = new Map(), calls = [], writes = [], requests = [];
-  const document = { readyState: 'interactive', addEventListener() {}, getElementById(id) { return nodes[id] ||= { value: id === 'prompt' ? '改成红色' : id === 'model' ? 'banana-2' : '', textContent: '', hidden: false, style: {}, addEventListener(event, fn) { this[event] = fn; } }; } };
+  const document = { readyState: 'interactive', addEventListener() {}, getElementById(id) { return nodes[id] ||= { value: id === 'prompt' ? '改成红色' : id === 'model' ? 'banana-2' : '', textContent: '', selectedIndex: -1, hidden: false, style: {}, postMessage(message) { this.lastMessage=JSON.parse(message); }, addEventListener(event, fn) { this[event] = fn; } }; } };
   const originalDoc = { id: 12, name: 'sample.psd', width: 1000, height: 800, mode: 'RGB', selection: { bounds: {left:150,top:120,right:350,bottom:240} } };
   const app = { activeDocument: originalDoc };
   const bounds = { left: 120, top: 90, right: 420, bottom: 290, width: 300, height: 200 };
@@ -51,14 +51,18 @@ test('history restores prompt and generation options in the same editor',async()
 test('deleting history removes only the chosen local record',async()=>{const h=harness();await h.ready();await h.nodes.generate.click();await h.ready();const record=JSON.parse(h.local.get('lk888-jobs'))[0];h.nodes['task-webview'].message({data:JSON.stringify({type:'deleteJob',jobId:record.id})});await h.ready();assert.equal(JSON.parse(h.local.get('lk888-jobs')).length,0);assert.equal(h.requests.length,1);assert.equal(h.calls.length,0);});
 
 
-test('history dropdown saves the current draft and restores the chosen record without generation',async()=>{
+test('UXP history dropdown uses selectedIndex even when value still holds the previous record',async()=>{
  const h=harness();await h.ready();await h.nodes['tab-edit'].click();
  h.nodes.prompt.value='第一条修改';h.nodes.quality.value='2K';h.nodes['output-size'].value='3:4';
  const first=JSON.parse(h.local.get('lk888-jobs'))[0];
  await new Promise(resolve=>setTimeout(resolve,2));
  await h.nodes['tab-edit'].click();h.nodes.prompt.value='第二条修改';
- h.nodes['history-select'].value=first.id;await h.nodes['history-select'].change();
- assert.equal(h.nodes['history-select'].value,first.id);
+ const current=JSON.parse(h.local.get('lk888-jobs'))[0];
+ h.nodes['history-select'].value=current.id;
+ h.nodes['history-select'].selectedIndex=1;await h.nodes['history-select'].change();
+ assert.equal(h.nodes['history-select'].selectedIndex,1);
+ assert.equal(h.nodes['task-webview'].lastMessage.selectedJobId,first.id);
+ assert.equal(h.nodes['input-webview'].lastMessage.prompt,'第一条修改');
  assert.equal(h.nodes.prompt.value,'第一条修改');assert.equal(h.nodes.quality.value,'2K');assert.equal(h.nodes['output-size'].value,'3:4');
  const jobs=JSON.parse(h.local.get('lk888-jobs'));
  assert.equal(jobs.length,2);assert.equal(jobs[0].prompt,'第二条修改');
