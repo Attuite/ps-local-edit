@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><style>
+*{box-sizing:border-box}body{margin:0;background:#292929;color:#f2f2f2;font:13px "Segoe UI","Microsoft YaHei",sans-serif}
+select{width:100%;height:34px;padding:0 8px;background:#292929;color:inherit;border:1px solid #666;border-radius:4px;font:inherit}select:focus-visible{outline:2px solid #9cc5ff;outline-offset:-2px}select:disabled{opacity:.6}
+</style></head><body>
+<select id="history-select" aria-label="历史记录" disabled><option value="">暂无历史记录</option></select>
+<script>
+const history=document.getElementById('history-select');
+let signature='';
+function send(data){if(window.uxpHost)window.uxpHost.postMessage(JSON.stringify(data));else window.parent.postMessage(data,'*');}
+window.addEventListener('message',event=>{
+ let data=event.data;try{if(typeof data==='string')data=JSON.parse(data);}catch(_){return;}
+ if(!data || data.type!=='history' || !Array.isArray(data.jobs))return;
+ const next=JSON.stringify(data.jobs);
+ // Keep the open menu intact while background tasks update.
+ if(next!==signature){
+  history.replaceChildren();
+  for(const job of data.jobs){const option=document.createElement('option');option.value=job.id;option.textContent='历史记录 · '+job.title;history.appendChild(option);}
+  if(!data.jobs.length){const option=document.createElement('option');option.value='';option.textContent='暂无历史记录';history.appendChild(option);}
+  signature=next;
+ }
+ history.value=data.selectedJobId||'';
+ history.disabled=!!data.busy || !data.jobs.length;
+});
+history.addEventListener('change',()=>{if(!history.disabled && history.value)send({type:'historySelect',jobId:history.value});});
+send({type:'historyReady'});
+</script></body></html>

@@ -2,7 +2,9 @@
 
 Photoshop 内的简洁 UXP 面板，使用 PS 原生选区完成局部修改。本 Fork 由 Attuite 维护，保留 LK888 任务接口，并加入自定义 OpenAI 兼容图片编辑 API。
 
-0.1.5 修复选择历史后下方内容不切换：按 UXP 下拉框的 `selectedIndex` 获取对应记录，并同步当前选中项；不依赖可能仍保存旧 ID 的 `.value`。输入页与结果页继续通过同一记录恢复流程更新。参考 [Adobe 下拉框事件说明](https://developer.adobe.com/photoshop/uxp/2021/uxp/reference-spectrum/User%20Interface/sp-dropdown/)。
+0.1.6 将历史选择器改为 WebView 中的标准 HTML 下拉框，按记录 ID 统一恢复标题、提示词、输入图片、生成参数及结果，避开原生 UXP 下拉框选中状态不同步的问题。切换前仍保存当前编辑；后台更新不会重建选项，切换进行中暂时禁用选择器。
+
+0.1.5 曾改为按 UXP 下拉框的 `selectedIndex` 切换，实际使用仍有标题和内容不更新的反馈，由 0.1.6 替代。
 
 0.1.4 将顶部多行标签改为收起的「历史记录」下拉选择，保留全部旧记录及新建改图功能。切换记录前保存当前输入，后台状态更新不会重建已展开的菜单。
 
@@ -44,7 +46,7 @@ OpenAI 模式的尺寸是模型输出尺寸，回填仍按原选区尺寸缩放�
 
 需要 Photoshop 25.1 或更新版本。上游作者报告 Photoshop 27.6 已加载并完成实际生成与图层回填；该报告不代表本 Fork 的验证结果。不同宿主和模型仍需自行验证。
 
-1. 尝试双击 `dist/局部改图-Attuite-0.1.5.ccx` 使用 Creative Cloud 安装。
+1. 尝试双击 `dist/局部改图-Attuite-0.1.6.ccx` 使用 Creative Cloud 安装。
 2. 若本地 CCX 无法安装，通过 Adobe UXP Developer Tool 添加 `plugin/manifest.json`，点击 Load。
    若已安装 Adobe 官方 UXP CLI，也可运行 `./scripts/load-local.ps1`，或使用 `-UxpCommand` 指定 CLI 路径；Photoshop 必须启用开发模式并返回主界面。
 3. 在 PS 增效工具中打开面板，进入设置选择接口，填写并保存自己的 API 地址和 Key。
@@ -62,6 +64,14 @@ OpenAI 模式的尺寸是模型输出尺寸，回填仍按原选区尺寸缩放�
 ```sh
 node --test tests/*.test.cjs
 ```
+
+历史记录浏览器集成检查（需要可用的 Playwright 和 Chrome；可用 `NODE_PATH` 指向已有 Playwright 包目录）：
+
+```sh
+node scripts/check-history.cjs
+```
+
+使用合成的 35、34、33 三条记录运行实际 `main.js`、历史选择页、输入页和结果页，验证往返切换、编辑保留及后台更新不重建菜单。UXP 消息桥与本机存储在浏览器中模拟；此检查不代表 Photoshop 内鼠标操作验收，不读取真实密钥或提交生成。
 
 Windows 打包：
 
