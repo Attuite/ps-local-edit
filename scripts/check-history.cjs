@@ -6,7 +6,7 @@ const path = require('node:path');
 const {chromium} = require('playwright');
 const {pngRGBA} = require('../plugin/png');
 const root = path.resolve(__dirname, '..');
-const sources = Object.fromEntries(['api','task-queue','png','main'].map(name=>[name,fs.readFileSync(path.join(root,'plugin',name+'.js'),'utf8')]));
+const sources = Object.fromEntries(['api','task-queue','png','upload-image','main'].map(name=>[name,fs.readFileSync(path.join(root,'plugin',name+'.js'),'utf8')]));
 const jobs = [35,34,33].map(number=>({id:'fixture-'+number,captureRef:'fixture-'+number,title:'局部改图 '+number,number,prompt:'测试记录 '+number,model:'banana-2',quality:number===35?'auto':'2K',ratio:number===35?'original':'3:4',count:1,state:'ready',tasks:[]}));
 const snapshots = {};
 for(const job of jobs){
@@ -22,8 +22,8 @@ const server=http.createServer((request,response)=>{
  const url=new URL(request.url,'http://localhost');
  if(url.pathname==='/fixture'){response.setHeader('Content-Type','text/html; charset=utf-8');response.end(html);return;}
  const name=url.pathname.slice(1);
- if(!['history.html','inputs.html','tasks.html','panel.css'].includes(name)){response.writeHead(404);response.end();return;}
- response.setHeader('Content-Type',name.endsWith('.css')?'text/css':'text/html; charset=utf-8');response.end(fs.readFileSync(path.join(root,'plugin',name)));
+ if(!['history.html','inputs.html','tasks.html','panel.css','upload-image.js'].includes(name)){response.writeHead(404);response.end();return;}
+ response.setHeader('Content-Type',name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html; charset=utf-8');response.end(fs.readFileSync(path.join(root,'plugin',name)));
 });
 (async()=>{
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));

@@ -27,7 +27,7 @@ function harness({ switchDocument = false, submissionFails = false, jobs = [], s
     if (name === 'photoshop') return { app, imaging: { encodeImageData: async () => 'YWJj' }, constants: { DocumentMode: { RGB: 'RGB' } } };
     if (name === 'uxp') return { storage };
     if (name === './modules/ps') return ps;
-    if(name==='./task-queue')return require('../plugin/task-queue');if(name==='./png')return {pngRGBA};
+    if(name==='./task-queue')return require('../plugin/task-queue');if(name==='./png')return {pngRGBA};if(name==='./upload-image')return require('../plugin/upload-image');
     if (name === './modules/fs') return { arrayBufferToBase64:v=>Buffer.from(v).toString('base64'), base64ToArrayBuffer: v => Uint8Array.from(Buffer.from(v, 'base64')).buffer };
     if (name === './api') return { ...api, MediaClient: Client };
     throw new Error(name);
@@ -36,7 +36,7 @@ function harness({ switchDocument = false, submissionFails = false, jobs = [], s
   // init loads saved prompt; restore the user's entry for this run.
   nodes.prompt ||= document.getElementById('prompt');nodes.prompt.value = '改成红色';
   document.getElementById('quality'); document.getElementById('output-size');
-  return { nodes, calls, writes, local, capture, requests, ready:async()=>{for(let i=0;i<10;i++)await new Promise(r=>setImmediate(r));if(!jobs.length)nodes.prompt.value='改成红色';} };
+  return { nodes, calls, writes, local, capture, requests, dataFiles, ready:async()=>{for(let i=0;i<10;i++)await new Promise(r=>setImmediate(r));if(!jobs.length)nodes.prompt.value='改成红色';} };
 }
 
 
@@ -58,7 +58,6 @@ test('history selector restores by record ID and saves the previous editor',asyn
  const first=JSON.parse(h.local.get('lk888-jobs'))[0];
  await new Promise(resolve=>setTimeout(resolve,2));
  await h.nodes['tab-edit'].click();h.nodes.prompt.value='第二条修改';
- const current=JSON.parse(h.local.get('lk888-jobs'))[0];
  await h.nodes['history-webview'].message({data:JSON.stringify({type:'historySelect',jobId:first.id})});
  assert.equal(h.nodes['history-webview'].lastMessage.selectedJobId,first.id);
  assert.equal(h.nodes['history-webview'].lastMessage.busy,false);
@@ -104,4 +103,37 @@ test('old history without an input snapshot still restores prompt and selected r
  assert.equal(h.nodes['task-webview'].lastMessage.selectedJobId,record.id);
  assert.match(h.nodes.status.textContent,/提示词和结果已恢复/);
  assert.equal(h.requests.length,0);
+});
+
+function oversizedHistory(){
+ const source='data:image/png;base64,'+'AAAA'.repeat(3333334),id='large-draft';
+ const bounds={left:120,top:90,right:420,bottom:290,width:300,height:200};
+ const meta={bounds,context:{documentId:12,documentName:'sample.psd',originalBounds:{left:150,top:120,right:350,bottom:240}},documentWidth:1000,documentHeight:800,sourceImage:source,references:[{name:'small.png',data:'data:image/png;base64,Yg=='}],mask:{width:300,height:200,components:1}};
+ const h=harness({jobs:[{id,captureRef:id,title:'局部改图 1',number:1,prompt:'保持构图',model:'banana-2',state:'draft',tasks:[]}],snapshots:{[id+'.json']:JSON.stringify(meta),[id+'.bin']:new Uint8Array(60000).buffer}});
+ return {h,source,id};
+}
+
+test('upload preflight scales model coordinates while preserving the original snapshot and mask',async()=>{
+ const {h,source,id}=oversizedHistory();await h.ready();
+ const submission=h.nodes.generate.click();await new Promise(resolve=>setImmediate(resolve));
+ const request=h.nodes['input-webview'].lastMessage;
+ assert.equal(request.type,'prepareUploads');assert.equal(request.images.length,1);assert.equal(h.requests.length,0);
+ const compressed='data:image/jpeg;base64,YQ==';
+ await h.nodes['input-webview'].message({data:{type:'uploadsPrepared',requestId:request.requestId,images:[{data:compressed,width:150,height:100}]}});
+ await submission;
+ assert.equal(h.requests.length,1);assert.equal(h.requests[0].params.images[0],compressed);assert.equal(h.requests[0].params.images[1],'data:image/png;base64,Yg==');
+ assert.match(h.requests[0].prompt,/15,15,115,75/);
+ const snapshot=JSON.parse(h.dataFiles.get(id+'.json'));
+ assert.equal(snapshot.sourceImage,source);assert.equal(snapshot.bounds.width,300);assert.equal(snapshot.mask.width,300);
+ assert.equal(JSON.parse(h.local.get('lk888-jobs'))[0].captureWidth,300);
+});
+
+test('failed compression stops before a paid request and does not mark the draft uncertain',async()=>{
+ const {h}=oversizedHistory();await h.ready();
+ const submission=h.nodes.generate.click();await new Promise(resolve=>setImmediate(resolve));
+ const request=h.nodes['input-webview'].lastMessage;
+ await h.nodes['input-webview'].message({data:{type:'uploadsPrepared',requestId:request.requestId,error:'图片压缩失败，未提交生成。'}});
+ await submission;
+ assert.equal(h.requests.length,0);assert.equal(JSON.parse(h.local.get('lk888-jobs'))[0].state,'draft');
+ assert.match(h.nodes.status.textContent,/压缩失败/);assert.equal(h.nodes.generate.disabled,false);
 });

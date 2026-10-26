@@ -5,6 +5,26 @@ const fileUtils = require('./modules/fs');
 const { MODELS, MediaClient, imageSources, unwrap, DEFAULT_CONNECTION, normalizeConnection, connectionKey } = require('./api');
 const { TaskQueue, POLL_INTERVAL_MS }=require('./task-queue');
 const { pngRGBA }=require('./png');
+const {MAX_UPLOAD_BYTES,MAX_REFERENCE_BYTES,imageBytes}=require('./upload-image');
+let uploadRequest=null,uploadSequence=0;
+async function prepareUploads(images){
+ const prepared=images.map(data=>({data})),indices=[];
+ images.forEach((data,index)=>{if(imageBytes(data)>MAX_UPLOAD_BYTES)indices.push(index);});
+ if(!indices.length)return prepared;
+ status('图片超过 10MB，正在自动压缩上传副本…');
+ const view=$('input-webview');
+ if(!view.postMessage)throw new Error('图片压缩组件不可用，请重新打开面板。');
+ if(uploadRequest)throw new Error('正在处理上一组图片，请稍后重试。');
+ const requestId=++uploadSequence;
+ const compressed=await new Promise((resolve,reject)=>{
+  const timer=setTimeout(()=>{uploadRequest=null;reject(new Error('图片压缩超时，未提交生成，请缩小图片后重试。'));},90000);
+  uploadRequest={requestId,resolve,reject,timer,count:indices.length};
+  try{view.postMessage(JSON.stringify({type:'prepareUploads',requestId,images:indices.map(index=>images[index])}));}
+  catch(error){clearTimeout(timer);uploadRequest=null;reject(error);}
+ });
+ indices.forEach((index,i)=>{prepared[index]=compressed[i];});
+ return prepared;
+}
 let queue=null, pageName='edit', selectedJobId=null;
 async function saveCurrent(){const record=queue?.jobs.find(j=>j.id===selectedJobId);if(!record)return;record.prompt=$('prompt').value;record.model=$('model').value||record.model;record.quality=$('quality').value||'auto';record.ratio=$('output-size').value||'original';record.count=Number($('count').value)||1;if(capture&&sourceImage){await snapshot(record.captureRef);record.captureWidth=capture.bounds.width;record.captureHeight=capture.bounds.height;}queue.save();}
 async function newDraft(){await saveCurrent();const number=Math.max(0,...queue.jobs.map(j=>j.number||0))+1,id='region-'+Date.now();queue.jobs.unshift({id,captureRef:id,title:'局部改图 '+number,number,createdAt:Date.now(),state:'draft',tasks:[],prompt:'',count:1});selectedJobId=id;capture=null;sourceImage=null;references=[];$('prompt').value='';queue.save();show('selection-gate',true);navigatePage('edit');syncInputs();status('新建改图：请读取选区。');}
@@ -108,11 +128,15 @@ async function generate(){
  const model=$('model').value || modelList[0]?.id;if(!model)throw new Error('请选择模型。');
  const params={},quality=$('quality').value||'auto',ratio=$('output-size').value||(connection.protocol==='openai'?'auto':'original');if(connection.protocol==='openai'){if(!['auto','low','medium','high'].includes(quality)||!['auto','1024x1024','1536x1024','1024x1536'].includes(ratio))throw new Error('此历史记录使用其他接口参数，请重新选择清晰度和尺寸。');params.quality=quality;params.size=ratio;}else{if(!['auto','1K','2K','4K'].includes(quality)||!['original','1:1','4:3','3:4','16:9','9:16'].includes(ratio))throw new Error('此历史记录使用其他接口参数，请重新选择清晰度和尺寸。');if(quality!=='auto')params.image_size=quality;if(ratio!=='original')params.aspect_ratio=ratio;}
  const existing=queue.jobs.find(j=>j.id===selectedJobId);const id=existing?.state==='draft'?existing.id:'region-'+Date.now(),region=capture.context.originalBounds,b=capture.bounds;
+ const originals=[sourceImage,...references.map(r=>r.data)],uploads=await prepareUploads(originals);
+ const scaleX=uploads[0].width?uploads[0].width/b.width:1,scaleY=uploads[0].height?uploads[0].height/b.height:1;
+ const coordinates=[(region.left-b.left)*scaleX,(region.top-b.top)*scaleY,(region.right-b.left)*scaleX,(region.bottom-b.top)*scaleY].map(Math.round);
  await snapshot(id);
- const record={id,title:existing?.state==='draft'?existing.title:'局部改图 '+(Math.max(0,...queue.jobs.map(j=>j.number||0))+1),number:existing?.state==='draft'?existing.number:Math.max(0,...queue.jobs.map(j=>j.number||0))+1,quality,ratio,model,prompt,count:Math.max(1,Math.min(4,parseInt($('count').value||'1',10)||1)),createdAt:Date.now(),captureWidth:b.width,captureHeight:b.height,captureRef:id,tasks:[],state:'submitting',instruction:'编辑图片1，保持画面尺寸、构图与主体位置。修改范围相对像素坐标：'+[region.left-b.left,region.top-b.top,region.right-b.left,region.bottom-b.top].map(Math.round).join(',')+'。其余图片按编号作为参考。修改要求：'+prompt};
+ const record={id,title:existing?.state==='draft'?existing.title:'局部改图 '+(Math.max(0,...queue.jobs.map(j=>j.number||0))+1),number:existing?.state==='draft'?existing.number:Math.max(0,...queue.jobs.map(j=>j.number||0))+1,quality,ratio,model,prompt,count:Math.max(1,Math.min(4,parseInt($('count').value||'1',10)||1)),createdAt:Date.now(),captureWidth:b.width,captureHeight:b.height,captureRef:id,tasks:[],state:'submitting',instruction:'编辑图片1，保持画面尺寸、构图与主体位置。修改范围相对像素坐标：'+coordinates.join(',')+'。其余图片按编号作为参考。修改要求：'+prompt};
  record.connection={...connection};
- await queue.submit(record,[sourceImage,...references.map(r=>r.data)],params);
- selectedJobId=id;syncInputs();show('selection-gate',false);navigatePage('edit');status('已提交。下方显示生成状态；点击新建改图可以继续修改其他区域。');queue.tick('submitted');
+ await queue.submit(record,uploads.map(image=>image.data),params);
+ const compressedCount=uploads.filter((image,i)=>image.data!==originals[i]).length;
+ selectedJobId=id;syncInputs();show('selection-gate',false);navigatePage('edit');status('已提交。'+(compressedCount?'已自动压缩 '+compressedCount+' 张上传图片。':'')+'下方显示生成状态；点击新建改图可以继续修改其他区域。');queue.tick('submitted');
 }
 async function openHistory(id){if(selectedJobId!==id)await saveCurrent();const record=queue.jobs.find(j=>j.id===id);if(!record)return;record.closed=false;selectedJobId=id;tasksUI();try{capture=await restoreCapture(record.captureRef);}catch(_){capture=null;}sourceImage=capture?.sourceImage||null;references=capture?.references||[];if(!sourceImage && capture){try{const folder=await fs.getDataFolder(),meta=JSON.parse(await(await folder.getEntry('selection.json')).read());if(meta.context.documentId===capture.context.documentId && JSON.stringify(meta.bounds)===JSON.stringify(capture.bounds))sourceImage=meta.sourceImage;}catch(_){}}$('prompt').value=record.prompt;$('model').value=record.model;$('quality').value=record.quality||'auto';$('output-size').value=record.ratio||'original';$('count').value=String(record.count||1);show('selection-gate',false);navigatePage('edit');syncInputs();status(sourceImage?'已恢复当时的输入。结果完成后点击图片添加图层。':'旧记录未保存输入缩略图；提示词和结果已恢复。');}
 async function candidateAction(data){const record=queue.jobs.find(j=>j.id===data.jobId),task=record?.tasks.find(t=>t.id===data.taskId),result=task?.results[data.index];if(!result)throw new Error('结果不存在。');
@@ -160,8 +184,9 @@ async function addFiles(files) {
     const ext = file.name.split('.').pop().toLowerCase();
     if (!['png','jpg','jpeg','webp'].includes(ext)) throw new Error('请添加 PNG、JPG 或 WebP 图片。');
     const buffer = await file.read({format:storage.formats.binary});
-    if (buffer.byteLength > 10*1024*1024) throw new Error('每张参考图请控制在10MB以内。');
-    references.push({name:file.name,data:'data:image/'+(ext==='jpg'?'jpeg':ext)+';base64,'+fileUtils.arrayBufferToBase64(buffer)});
+    if (buffer.byteLength > MAX_REFERENCE_BYTES) throw new Error('单张参考图超过 60MB，请先缩小文件。');
+    const [image]=await prepareUploads(['data:image/'+(ext==='jpg'?'jpeg':ext)+';base64,'+fileUtils.arrayBufferToBase64(buffer)]);
+    references.push({name:file.name,data:image.data});
   }
   const container=$('reference-thumbs');
   container.innerHTML='';
@@ -232,6 +257,17 @@ async function init() {
     if(event.source && event.source!==inputView)return;
     let data=event.data;try{if(typeof data==='string')data=JSON.parse(data);}catch(_){return;}
     if(!data || typeof data.type!=='string')return;
+    if(data.type==='uploadsPrepared'){
+      if(!uploadRequest || data.requestId!==uploadRequest.requestId)return;
+      const pending=uploadRequest;uploadRequest=null;clearTimeout(pending.timer);
+      try{
+        if(data.error)throw new Error(String(data.error));
+        if(!Array.isArray(data.images) || data.images.length!==pending.count)throw new Error('图片压缩返回数量不正确，未提交生成。');
+        for(const image of data.images){if(!image || imageBytes(image.data)>MAX_UPLOAD_BYTES || !Number.isInteger(image.width) || image.width<1 || !Number.isInteger(image.height) || image.height<1)throw new Error('图片压缩结果无效，未提交生成。');}
+        pending.resolve(data.images);
+      }catch(error){pending.reject(error);}
+      return;
+    }
     if(data.type==='ready'){console.log('LK888 local image input ready');syncInputs();return;}
     if(data.type==='height'){if(inputView.style)inputView.style.height=Math.max(230,Math.min(450,Number(data.height)||270))+'px';return;}
     if(data.type==='prompt'){if(typeof data.value==='string'){$('prompt').value=data.value.slice(0,20000);localStorage.setItem('lk888-prompt',$('prompt').value);}return;}
@@ -239,13 +275,13 @@ async function init() {
     return withBusy(async()=>{
     if(data.type==='addReferences'){
       if(!Array.isArray(data.references) || data.references.length+references.length>5)throw new Error('最多添加5张参考图。');
-      for(const ref of data.references){if(!ref || typeof ref.data!=='string' || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=\r\n]+$/.test(ref.data) || ref.data.length>14*1024*1024)throw new Error('参考图片格式或大小无效。');}
+      for(const ref of data.references){if(!ref || imageBytes(ref.data)>MAX_UPLOAD_BYTES)throw new Error('参考图片格式或大小无效。');}
       references.push(...data.references.map(ref=>({data:ref.data,name:String(ref.name||'截图.png').slice(0,150)})));syncInputs();status('已添加参考图，可用图片编号引用。');
     }
     if(data.type==='removeReference' && Number.isInteger(data.index)){references.splice(data.index,1);syncInputs();}
     });
   });
-  inputView.addEventListener('loaderror',()=>status('图片输入区加载失败，请保留此提示并反馈。',true));
+  inputView.addEventListener('loaderror',()=>{const error=new Error('图片输入区加载失败，请重新打开面板。');if(uploadRequest){const pending=uploadRequest;uploadRequest=null;clearTimeout(pending.timer);pending.reject(error);}status(error.message,true);});
   $('restore-result').addEventListener('click',()=>{if(job && !job.imported && !job.source){status('先处理当前任务。',true);return;}const saved=localStorage.getItem('lk888-last-result');if(!saved){status('暂无上次结果。');return;}job=JSON.parse(saved);capture=null;sourceImage=null;saveJob();refresh();status('已恢复上次结果，可点击保存结果。');});
   $('back-editor').addEventListener('click', () => settingsPage(false));
   $('capture-selection').addEventListener('click', () => withBusy(readSelection));
