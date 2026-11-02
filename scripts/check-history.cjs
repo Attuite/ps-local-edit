@@ -6,7 +6,7 @@ const path = require('node:path');
 const {chromium} = require('playwright');
 const {pngRGBA} = require('../plugin/png');
 const root = path.resolve(__dirname, '..');
-const sources = Object.fromEntries(['api','task-queue','png','upload-image','main'].map(name=>[name,fs.readFileSync(path.join(root,'plugin',name+'.js'),'utf8')]));
+const sources = Object.fromEntries(['api','task-queue','png','upload-image','image-geometry','main'].map(name=>[name,fs.readFileSync(path.join(root,'plugin',name+'.js'),'utf8')]));
 const jobs = [35,34,33].map(number=>({id:'fixture-'+number,captureRef:'fixture-'+number,title:'局部改图 '+number,number,prompt:'测试记录 '+number,model:'banana-2',quality:number===35?'auto':'2K',ratio:number===35?'original':'3:4',count:1,state:'ready',tasks:[]}));
 const snapshots = {};
 for(const job of jobs){

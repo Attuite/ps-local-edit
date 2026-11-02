@@ -6,20 +6,21 @@ const { MODELS, MediaClient, imageSources, unwrap, DEFAULT_CONNECTION, normalize
 const { TaskQueue, POLL_INTERVAL_MS }=require('./task-queue');
 const { pngRGBA }=require('./png');
 const {MAX_UPLOAD_BYTES,MAX_REFERENCE_BYTES,imageBytes}=require('./upload-image');
+const {RATIOS,generationFrame}=require('./image-geometry');
 let uploadRequest=null,uploadSequence=0;
-async function prepareUploads(images){
+async function prepareUploads(images,frame){
  const prepared=images.map(data=>({data})),indices=[];
- images.forEach((data,index)=>{if(imageBytes(data)>MAX_UPLOAD_BYTES)indices.push(index);});
+ images.forEach((data,index)=>{if((index===0 && frame) || imageBytes(data)>MAX_UPLOAD_BYTES)indices.push(index);});
  if(!indices.length)return prepared;
- status('图片超过 10MB，正在自动压缩上传副本…');
+ status(frame?'正在按输出比例处理上传副本…':'图片超过 10MB，正在自动压缩上传副本…');
  const view=$('input-webview');
  if(!view.postMessage)throw new Error('图片压缩组件不可用，请重新打开面板。');
  if(uploadRequest)throw new Error('正在处理上一组图片，请稍后重试。');
  const requestId=++uploadSequence;
  const compressed=await new Promise((resolve,reject)=>{
   const timer=setTimeout(()=>{uploadRequest=null;reject(new Error('图片压缩超时，未提交生成，请缩小图片后重试。'));},90000);
-  uploadRequest={requestId,resolve,reject,timer,count:indices.length};
-  try{view.postMessage(JSON.stringify({type:'prepareUploads',requestId,images:indices.map(index=>images[index])}));}
+  uploadRequest={requestId,resolve,reject,timer,count:indices.length,frame};
+  try{view.postMessage(JSON.stringify({type:'prepareUploads',requestId,images:indices.map(index=>images[index]),frame}));}
   catch(error){clearTimeout(timer);uploadRequest=null;reject(error);}
  });
  indices.forEach((index,i)=>{prepared[index]=compressed[i];});
@@ -40,7 +41,7 @@ function loadConnectionModels(){
  try{const saved=JSON.parse(localStorage.getItem(modelStorageKey())||'null');if(Array.isArray(saved)&&saved.length)modelList=saved;}catch(_){}
  renderModels();
  renderDropdown('quality',connection.protocol==='openai'?[['auto','模型默认'],['low','低'],['medium','中'],['high','高']]:[['auto','模型默认'],['1K','1K'],['2K','2K'],['4K','4K']]);
- renderDropdown('output-size',connection.protocol==='openai'?[['auto','模型默认 · 原选区回填'],['1024x1024','1024 × 1024'],['1536x1024','1536 × 1024'],['1024x1536','1024 × 1536']]:[['original','匹配原图选区'],['1:1','正方形 · 1:1'],['4:3','横图 · 4:3'],['3:4','竖图 · 3:4'],['16:9','横图 · 16:9'],['9:16','竖图 · 9:16']]);
+ renderDropdown('output-size',connection.protocol==='openai'?[['auto','自动匹配比例 · 补边回填'],['1024x1024','1024 × 1024'],['1536x1024','1536 × 1024'],['1024x1536','1024 × 1536']]:[['original','匹配选区比例 · 补边回填'],...RATIOS.map(value=>[value,value])]);
 }
 function connectionHint(){const openai=$('api-protocol').value==='openai';$('api-hint').textContent=openai?'需支持 POST /images/edits（同步图片编辑），Base URL 通常以 /v1 结尾。保存后生效；在下方添加你的图像模型。':'使用 LK888 的 /v1/media/generate 任务接口。保存后生效。';}
 function renderModels(){const node=$('model');if(!document.createElement)return;const selected=node.value;node.innerHTML='';const menu=document.createElement('sp-menu');menu.setAttribute('slot','options');modelList.forEach(model=>{const item=document.createElement('sp-menu-item');item.setAttribute('value',model.id);item.textContent=model.label || model.id;if(model.id===selected)item.setAttribute('selected','');menu.appendChild(item);});node.appendChild(menu);node.value=modelList.some(m=>m.id===selected)?selected:(modelList[0]||{}).id;$('models-status').textContent='已保存 '+modelList.length+' 个模型。';}
@@ -126,17 +127,27 @@ async function generate(){
  if(!capture || !sourceImage)await readSelection();$('prompt').value=prompt;
  if(!app.activeDocument || app.activeDocument.id!==capture.context.documentId)throw new Error('请读取当前文档选区。');
  const model=$('model').value || modelList[0]?.id;if(!model)throw new Error('请选择模型。');
- const params={},quality=$('quality').value||'auto',ratio=$('output-size').value||(connection.protocol==='openai'?'auto':'original');if(connection.protocol==='openai'){if(!['auto','low','medium','high'].includes(quality)||!['auto','1024x1024','1536x1024','1024x1536'].includes(ratio))throw new Error('此历史记录使用其他接口参数，请重新选择清晰度和尺寸。');params.quality=quality;params.size=ratio;}else{if(!['auto','1K','2K','4K'].includes(quality)||!['original','1:1','4:3','3:4','16:9','9:16'].includes(ratio))throw new Error('此历史记录使用其他接口参数，请重新选择清晰度和尺寸。');if(quality!=='auto')params.image_size=quality;if(ratio!=='original')params.aspect_ratio=ratio;}
+ const params={},quality=$('quality').value||'auto',ratio=$('output-size').value||(connection.protocol==='openai'?'auto':'original');
+ if(connection.protocol==='openai'){
+  if(!['auto','low','medium','high'].includes(quality)||!['auto','1024x1024','1536x1024','1024x1536'].includes(ratio))throw new Error('此历史记录使用其他接口参数，请重新选择清晰度和尺寸。');
+  params.quality=quality;
+ }else{
+  if(!['auto','1K','2K','4K'].includes(quality)||!['original',...RATIOS].includes(ratio))throw new Error('此历史记录使用其他接口参数，请重新选择清晰度和尺寸。');
+  if(quality!=='auto')params.image_size=quality;
+ }
  const existing=queue.jobs.find(j=>j.id===selectedJobId);const id=existing?.state==='draft'?existing.id:'region-'+Date.now(),region=capture.context.originalBounds,b=capture.bounds;
- const originals=[sourceImage,...references.map(r=>r.data)],uploads=await prepareUploads(originals);
- const scaleX=uploads[0].width?uploads[0].width/b.width:1,scaleY=uploads[0].height?uploads[0].height/b.height:1;
- const coordinates=[(region.left-b.left)*scaleX,(region.top-b.top)*scaleY,(region.right-b.left)*scaleX,(region.bottom-b.top)*scaleY].map(Math.round);
+ const frame=generationFrame(b.width,b.height,connection.protocol,model,ratio);
+ Object.assign(params,frame.params);
+ const originals=[sourceImage,...references.map(r=>r.data)],uploads=await prepareUploads(originals,frame);
+ const scale=uploads[0].width/frame.width;
+ const coordinates=[(region.left-b.left+frame.left)*scale,(region.top-b.top+frame.top)*scale,(region.right-b.left+frame.left)*scale,(region.bottom-b.top+frame.top)*scale].map(Math.round);
  await snapshot(id);
- const record={id,title:existing?.state==='draft'?existing.title:'局部改图 '+(Math.max(0,...queue.jobs.map(j=>j.number||0))+1),number:existing?.state==='draft'?existing.number:Math.max(0,...queue.jobs.map(j=>j.number||0))+1,quality,ratio,model,prompt,count:Math.max(1,Math.min(4,parseInt($('count').value||'1',10)||1)),createdAt:Date.now(),captureWidth:b.width,captureHeight:b.height,captureRef:id,tasks:[],state:'submitting',instruction:'编辑图片1，保持画面尺寸、构图与主体位置。修改范围相对像素坐标：'+coordinates.join(',')+'。其余图片按编号作为参考。修改要求：'+prompt};
+ const record={id,title:existing?.state==='draft'?existing.title:'局部改图 '+(Math.max(0,...queue.jobs.map(j=>j.number||0))+1),number:existing?.state==='draft'?existing.number:Math.max(0,...queue.jobs.map(j=>j.number||0))+1,quality,ratio,model,prompt,count:Math.max(1,Math.min(4,parseInt($('count').value||'1',10)||1)),createdAt:Date.now(),captureWidth:b.width,captureHeight:b.height,captureRef:id,tasks:[],state:'submitting',instruction:'编辑图片1，保持完整画布宽高比例、构图与主体位置，保留空白补边，不裁剪画布，保持未修改区域的柱子、墙角等结构位置不变。修改范围相对像素坐标：'+coordinates.join(',')+'。其余图片按编号作为参考。修改要求：'+prompt};
+ record.imageBounds={left:b.left-frame.left,top:b.top-frame.top,width:frame.width,height:frame.height};
+ record.outputParams={...params};record.uploadWidth=uploads[0].width;record.uploadHeight=uploads[0].height;
  record.connection={...connection};
  await queue.submit(record,uploads.map(image=>image.data),params);
- const compressedCount=uploads.filter((image,i)=>image.data!==originals[i]).length;
- selectedJobId=id;syncInputs();show('selection-gate',false);navigatePage('edit');status('已提交。'+(compressedCount?'已自动压缩 '+compressedCount+' 张上传图片。':'')+'下方显示生成状态；点击新建改图可以继续修改其他区域。');queue.tick('submitted');
+ selectedJobId=id;syncInputs();show('selection-gate',false);navigatePage('edit');status('已提交，上传副本已按输出比例补边并按需压缩。下方显示生成状态；点击新建改图可以继续修改其他区域。');queue.tick('submitted');
 }
 async function openHistory(id){if(selectedJobId!==id)await saveCurrent();const record=queue.jobs.find(j=>j.id===id);if(!record)return;record.closed=false;selectedJobId=id;tasksUI();try{capture=await restoreCapture(record.captureRef);}catch(_){capture=null;}sourceImage=capture?.sourceImage||null;references=capture?.references||[];if(!sourceImage && capture){try{const folder=await fs.getDataFolder(),meta=JSON.parse(await(await folder.getEntry('selection.json')).read());if(meta.context.documentId===capture.context.documentId && JSON.stringify(meta.bounds)===JSON.stringify(capture.bounds))sourceImage=meta.sourceImage;}catch(_){}}$('prompt').value=record.prompt;$('model').value=record.model;$('quality').value=record.quality||'auto';$('output-size').value=record.ratio||'original';$('count').value=String(record.count||1);show('selection-gate',false);navigatePage('edit');syncInputs();status(sourceImage?'已恢复当时的输入。结果完成后点击图片添加图层。':'旧记录未保存输入缩略图；提示词和结果已恢复。');}
 async function candidateAction(data){const record=queue.jobs.find(j=>j.id===data.jobId),task=record?.tasks.find(t=>t.id===data.taskId),result=task?.results[data.index];if(!result)throw new Error('结果不存在。');
@@ -147,7 +158,7 @@ async function candidateAction(data){const record=queue.jobs.find(j=>j.id===data
  if(!doc || doc.id!==region.context.documentId || doc.name!==region.context.documentName)throw new Error('请切回任务对应的原文档，再点击结果图片。');
  if(doc.width!==region.documentWidth || doc.height!==region.documentHeight)throw new Error('原画布尺寸已改变，请保存原图后手动导入。');
  const folder=await fs.getTemporaryFolder(),file=await folder.createFile('result-'+Date.now()+'.'+ext,{overwrite:true});await file.write(buffer,{format:storage.formats.binary});
- await ps.placeBack('editableSo',fs.createSessionToken(file),region.bounds,region.maskData,{enabled:false,skipImageBlur:true});result.imported=true;queue.save();status('已添加此图片为独立图层，可再次点击图片重复添加。');
+ await ps.placeBack('editableSo',fs.createSessionToken(file),region.bounds,region.maskData,{enabled:false,skipImageBlur:true,imageBounds:record.imageBounds});result.imported=true;queue.save();status('已等比例添加此图片并使用原选区蒙版，可再次点击图片重复添加。');
 }
 async function readSelection() {
   if(queue && (!selectedJobId || queue.jobs.find(j=>j.id===selectedJobId)?.tasks.length)) await newDraft();
@@ -264,6 +275,7 @@ async function init() {
         if(data.error)throw new Error(String(data.error));
         if(!Array.isArray(data.images) || data.images.length!==pending.count)throw new Error('图片压缩返回数量不正确，未提交生成。');
         for(const image of data.images){if(!image || imageBytes(image.data)>MAX_UPLOAD_BYTES || !Number.isInteger(image.width) || image.width<1 || !Number.isInteger(image.height) || image.height<1)throw new Error('图片压缩结果无效，未提交生成。');}
+        if(pending.frame){const image=data.images[0],frame=pending.frame;if(image.width>frame.width || image.height>frame.height || image.width*frame.height!==image.height*frame.width)throw new Error('上传图片比例已改变，未提交生成。');}
         pending.resolve(data.images);
       }catch(error){pending.reject(error);}
       return;

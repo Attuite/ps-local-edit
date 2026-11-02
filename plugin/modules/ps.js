@@ -5,6 +5,7 @@
 
 const { app, action, core, imaging, constants } = require('photoshop');
 const settings = require('./settings.js');
+const { uniformScale } = require('../image-geometry');
 
 /**
  * Check if there is an active document
@@ -1181,6 +1182,7 @@ async function restoreSelection(doc, bounds, maskImageData, featherOptions = {})
  */
 async function placeBack(placeBackMode, fileToken, bounds, maskImageData, featherOptions = {}) {
     const doc = app.activeDocument;
+    const imageBounds = featherOptions.imageBounds || bounds;
 
     const isSelectionOnly = placeBackMode === 'selection';
     const applyPlaceBackAsMask = placeBackMode === 'mask';
@@ -1220,7 +1222,7 @@ async function placeBack(placeBackMode, fileToken, bounds, maskImageData, feathe
                 // useful when pasted image is larger than the document. 
                 // it prevents automatic resizing of pasted image
                 console.log("Using High-Res Editable Smart Object path...");
-                const result = await placeAsEditableSmartObject(fileToken, bounds, doc);
+                const result = await placeAsEditableSmartObject(fileToken, imageBounds, doc);
                 placedImageWidth = result.placedImageWidth;
                 placedImageHeight = result.placedImageHeight;
             } else {
@@ -1296,7 +1298,7 @@ async function placeBack(placeBackMode, fileToken, bounds, maskImageData, feathe
                 try {
                     console.log("Step 3: Transforming Smart Object...");
                     const placedLayer = doc.activeLayers[0];
-                    const dimensions = await transformLayerToBounds(placedLayer, bounds);
+                    const dimensions = await transformLayerToBounds(placedLayer, imageBounds);
 
                     placedImageWidth = dimensions.width;
                     placedImageHeight = dimensions.height;
@@ -1607,7 +1609,7 @@ async function applySmartObjectNativeMask(parentDoc) {
 }
 
 /**
- * Helper function to scale and move a layer to exactly match target bounds
+ * Scale a layer uniformly and center it in matching target bounds; reject mismatches.
  * @param {object} layer - The layer to transform
  * @param {object} bounds - The target bounds {left, top, width, height}
  * @returns {Promise<{width: number, height: number}>} Original native dimensions of the layer before transform
@@ -1622,10 +1624,7 @@ async function transformLayerToBounds(layer, bounds) {
     console.log(`Layer native bounds: w=${currentWidth}, h=${currentHeight}`);
     console.log(`Target bounds: w=${bounds.width}, h=${bounds.height}`);
 
-    const safeWidth = currentWidth || 1;
-    const safeHeight = currentHeight || 1;
-    const scaleX = (bounds.width / safeWidth) * 100;
-    const scaleY = (bounds.height / safeHeight) * 100;
+    const scale = uniformScale(currentWidth, currentHeight, bounds);
 
     // Step 1: Scale
     await action.batchPlay([
@@ -1636,18 +1635,18 @@ async function transformLayerToBounds(layer, bounds) {
                 _enum: "quadCenterState",
                 _value: "QCSCorner0"
             },
-            width: { _unit: "percentUnit", _value: scaleX },
-            height: { _unit: "percentUnit", _value: scaleY },
+            width: { _unit: "percentUnit", _value: scale * 100 },
+            height: { _unit: "percentUnit", _value: scale * 100 },
             interfaceIconFrameDimmed: { _enum: "interpolationType", _value: "bicubic" }
         }
     ], { synchronousExecution: true });
 
-    console.log(`Scaled to ${scaleX.toFixed(1)}% x ${scaleY.toFixed(1)}%`);
+    console.log(`Scaled uniformly to ${(scale * 100).toFixed(1)}%`);
 
     // Step 2: Move
     const scaledBounds = layer.bounds;
-    const deltaX = bounds.left - scaledBounds.left;
-    const deltaY = bounds.top - scaledBounds.top;
+    const deltaX = bounds.left + (bounds.width - currentWidth * scale) / 2 - scaledBounds.left;
+    const deltaY = bounds.top + (bounds.height - currentHeight * scale) / 2 - scaledBounds.top;
 
     console.log(`Moving by: deltaX=${deltaX}, deltaY=${deltaY}`);
 

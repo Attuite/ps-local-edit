@@ -5,10 +5,10 @@ const { test } = require('node:test');
 const api = require('../plugin/api');
 const {TaskQueue}=require('../plugin/task-queue');const {pngRGBA}=require('../plugin/png');
 
-function harness({ switchDocument = false, submissionFails = false, jobs = [], snapshots = {} } = {}) {
+function harness({ switchDocument = false, submissionFails = false, jobs = [], snapshots = {}, manualUploads = false } = {}) {
   const nodes = {}, local = new Map(), calls = [], writes = [], requests = [];
   local.set('lk888-jobs',JSON.stringify(jobs));
-  const document = { readyState: 'interactive', addEventListener() {}, getElementById(id) { return nodes[id] ||= { value: id === 'prompt' ? '改成红色' : id === 'model' ? 'banana-2' : '', textContent: '', selectedIndex: -1, hidden: false, style: {}, postMessage(message) { this.lastMessage=JSON.parse(message); }, addEventListener(event, fn) { this[event] = fn; } }; } };
+  const document = { readyState: 'interactive', addEventListener() {}, getElementById(id) { return nodes[id] ||= { value: id === 'prompt' ? '改成红色' : id === 'model' ? 'banana-2' : '', textContent: '', selectedIndex: -1, hidden: false, style: {}, postMessage(message) { this.lastMessage=JSON.parse(message); if(this.lastMessage.type==='prepareUploads' && !manualUploads){const request=this.lastMessage;queueMicrotask(()=>nodes['input-webview'].message({data:{type:'uploadsPrepared',requestId:request.requestId,images:request.images.map(data=>({data,width:request.frame.width,height:request.frame.height}))}}));} }, addEventListener(event, fn) { this[event] = fn; } }; } };
   const originalDoc = { id: 12, name: 'sample.psd', width: 1000, height: 800, mode: 'RGB', selection: { bounds: {left:150,top:120,right:350,bottom:240} } };
   const app = { activeDocument: originalDoc };
   const bounds = { left: 120, top: 90, right: 420, bottom: 290, width: 300, height: 200 };
@@ -27,7 +27,7 @@ function harness({ switchDocument = false, submissionFails = false, jobs = [], s
     if (name === 'photoshop') return { app, imaging: { encodeImageData: async () => 'YWJj' }, constants: { DocumentMode: { RGB: 'RGB' } } };
     if (name === 'uxp') return { storage };
     if (name === './modules/ps') return ps;
-    if(name==='./task-queue')return require('../plugin/task-queue');if(name==='./png')return {pngRGBA};if(name==='./upload-image')return require('../plugin/upload-image');
+    if(name==='./task-queue')return require('../plugin/task-queue');if(name==='./png')return {pngRGBA};if(name==='./upload-image')return require('../plugin/upload-image');if(name==='./image-geometry')return require('../plugin/image-geometry');
     if (name === './modules/fs') return { arrayBufferToBase64:v=>Buffer.from(v).toString('base64'), base64ToArrayBuffer: v => Uint8Array.from(Buffer.from(v, 'base64')).buffer };
     if (name === './api') return { ...api, MediaClient: Client };
     throw new Error(name);
@@ -109,7 +109,7 @@ function oversizedHistory(){
  const source='data:image/png;base64,'+'AAAA'.repeat(3333334),id='large-draft';
  const bounds={left:120,top:90,right:420,bottom:290,width:300,height:200};
  const meta={bounds,context:{documentId:12,documentName:'sample.psd',originalBounds:{left:150,top:120,right:350,bottom:240}},documentWidth:1000,documentHeight:800,sourceImage:source,references:[{name:'small.png',data:'data:image/png;base64,Yg=='}],mask:{width:300,height:200,components:1}};
- const h=harness({jobs:[{id,captureRef:id,title:'局部改图 1',number:1,prompt:'保持构图',model:'banana-2',state:'draft',tasks:[]}],snapshots:{[id+'.json']:JSON.stringify(meta),[id+'.bin']:new Uint8Array(60000).buffer}});
+ const h=harness({manualUploads:true,jobs:[{id,captureRef:id,title:'局部改图 1',number:1,prompt:'保持构图',model:'banana-2',state:'draft',tasks:[]}],snapshots:{[id+'.json']:JSON.stringify(meta),[id+'.bin']:new Uint8Array(60000).buffer}});
  return {h,source,id};
 }
 
@@ -119,10 +119,14 @@ test('upload preflight scales model coordinates while preserving the original sn
  const request=h.nodes['input-webview'].lastMessage;
  assert.equal(request.type,'prepareUploads');assert.equal(request.images.length,1);assert.equal(h.requests.length,0);
  const compressed='data:image/jpeg;base64,YQ==';
- await h.nodes['input-webview'].message({data:{type:'uploadsPrepared',requestId:request.requestId,images:[{data:compressed,width:150,height:100}]}});
+ await h.nodes['input-webview'].message({data:{type:'uploadsPrepared',requestId:request.requestId,images:[{data:compressed,width:158,height:106}]}});
  await submission;
  assert.equal(h.requests.length,1);assert.equal(h.requests[0].params.images[0],compressed);assert.equal(h.requests[0].params.images[1],'data:image/png;base64,Yg==');
- assert.match(h.requests[0].prompt,/15,15,115,75/);
+ assert.match(h.requests[0].prompt,/19,18,119,78/);
+ assert.equal(h.requests[0].params.aspect_ratio,'3:2');
+ const saved=JSON.parse(h.local.get('lk888-jobs'))[0];
+ assert.deepEqual(saved.imageBounds,{left:112,top:84,width:316,height:212});
+ assert.equal(saved.uploadWidth,158);assert.equal(saved.uploadHeight,106);
  const snapshot=JSON.parse(h.dataFiles.get(id+'.json'));
  assert.equal(snapshot.sourceImage,source);assert.equal(snapshot.bounds.width,300);assert.equal(snapshot.mask.width,300);
  assert.equal(JSON.parse(h.local.get('lk888-jobs'))[0].captureWidth,300);
@@ -136,4 +140,25 @@ test('failed compression stops before a paid request and does not mark the draft
  await submission;
  assert.equal(h.requests.length,0);assert.equal(JSON.parse(h.local.get('lk888-jobs'))[0].state,'draft');
  assert.match(h.nodes.status.textContent,/压缩失败/);assert.equal(h.nodes.generate.disabled,false);
+});
+
+test('upload bridge rejects a distorted frame before a paid generation request',async()=>{
+ const {h}=oversizedHistory();await h.ready();
+ const submission=h.nodes.generate.click();await new Promise(resolve=>setImmediate(resolve));
+ const request=h.nodes['input-webview'].lastMessage;
+ await h.nodes['input-webview'].message({data:{type:'uploadsPrepared',requestId:request.requestId,images:[{data:'data:image/png;base64,YQ==',width:150,height:100}]}});
+ await submission;
+ assert.equal(h.requests.length,0);assert.match(h.nodes.status.textContent,/比例已改变/);
+});
+
+test('history retains padding placement while the original mask and snapshot stay unchanged',async()=>{
+ const h=harness();await h.ready();await h.nodes.generate.click();await h.ready();
+ const record=JSON.parse(h.local.get('lk888-jobs'))[0];
+ await h.nodes['tab-edit'].click();
+ await h.nodes['history-webview'].message({data:{type:'historySelect',jobId:record.id}});
+ await h.nodes['task-webview'].message({data:{type:'import',jobId:record.id,taskId:record.tasks[0].id,index:0}});await h.ready();
+ assert.equal(h.calls.length,1);
+ assert.deepEqual(JSON.parse(JSON.stringify(h.calls[0][4].imageBounds)),record.imageBounds);
+ assert.deepEqual(JSON.parse(JSON.stringify(h.calls[0][2])),h.capture.bounds);
+ assert.equal(h.calls[0][3].width,h.capture.maskData.width);
 });
