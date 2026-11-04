@@ -8,7 +8,7 @@ const {TaskQueue}=require('../plugin/task-queue');const {pngRGBA}=require('../pl
 function harness({ switchDocument = false, submissionFails = false, jobs = [], snapshots = {}, manualUploads = false } = {}) {
   const nodes = {}, local = new Map(), calls = [], writes = [], requests = [];
   local.set('lk888-jobs',JSON.stringify(jobs));
-  const document = { readyState: 'interactive', addEventListener() {}, getElementById(id) { return nodes[id] ||= { value: id === 'prompt' ? '改成红色' : id === 'model' ? 'banana-2' : '', textContent: '', selectedIndex: -1, hidden: false, style: {}, postMessage(message) { this.lastMessage=JSON.parse(message); if(this.lastMessage.type==='prepareUploads' && !manualUploads){const request=this.lastMessage;queueMicrotask(()=>nodes['input-webview'].message({data:{type:'uploadsPrepared',requestId:request.requestId,images:request.images.map(data=>({data,width:request.frame.width,height:request.frame.height}))}}));} }, addEventListener(event, fn) { this[event] = fn; } }; } };
+  const document = { readyState: 'interactive', addEventListener() {}, getElementById(id) { return nodes[id] ||= { value: id === 'prompt' ? '改成红色' : id === 'model' ? 'banana-2.1' : '', textContent: '', selectedIndex: -1, hidden: false, style: {}, postMessage(message) { this.lastMessage=JSON.parse(message); if(this.lastMessage.type==='prepareUploads' && !manualUploads){const request=this.lastMessage;queueMicrotask(()=>nodes['input-webview'].message({data:{type:'uploadsPrepared',requestId:request.requestId,images:request.images.map(data=>({data,width:request.frame.width,height:request.frame.height}))}}));} }, addEventListener(event, fn) { this[event] = fn; } }; } };
   const originalDoc = { id: 12, name: 'sample.psd', width: 1000, height: 800, mode: 'RGB', selection: { bounds: {left:150,top:120,right:350,bottom:240} } };
   const app = { activeDocument: originalDoc };
   const bounds = { left: 120, top: 90, right: 420, bottom: 290, width: 300, height: 200 };
@@ -43,7 +43,18 @@ function harness({ switchDocument = false, submissionFails = false, jobs = [], s
 test('selection uses lossless PNG and does not submit a task',async()=>{const h=harness();await h.ready();await h.nodes['capture-selection'].click();assert.match(h.nodes.preview.src,/^data:image\/png/);assert.equal(h.requests.length,0);});
 test('generation releases editor and never auto imports results',async()=>{const h=harness();await h.ready();await h.nodes.generate.click();await h.ready();assert.equal(h.requests.length,1);assert.equal(h.calls.length,0);assert.equal(h.nodes.generate.disabled,false);assert.ok(JSON.parse(h.local.get('lk888-jobs'))[0].tasks[0].results.length);});
 test('another region can submit while previous task remains in history',async()=>{const h=harness();await h.ready();await h.nodes.generate.click();await h.ready();await h.nodes['capture-selection'].click();h.nodes.prompt.value='修改另一区域';await h.nodes.generate.click();await h.ready();assert.equal(h.requests.length,2);assert.equal(JSON.parse(h.local.get('lk888-jobs')).length,2);assert.equal(h.calls.length,0);});
-test('model quality aspect and four tasks are preserved',async()=>{const h=harness();await h.ready();h.nodes.count.value='4';h.nodes.quality.value='2K';h.nodes['output-size'].value='16:9';await h.nodes.generate.click();await h.ready();assert.equal(h.requests.length,4);assert.equal(h.requests[0].params.image_size,'2K');assert.equal(h.requests[0].params.aspect_ratio,'16:9');assert.equal(h.calls.length,0);});
+test('Nano Banana 2.1 sends the selected quality and aspect ratio for each task',async()=>{
+ const h=harness();await h.ready();
+ h.nodes.count.value='4';h.nodes.quality.value='2K';h.nodes['output-size'].value='16:9';
+ await h.nodes.generate.click();await h.ready();
+ assert.equal(h.requests.length,4);
+ for(const {model,params} of h.requests){
+  assert.equal(model,'banana-2.1');
+  assert.equal(params.imageSize,'2K');
+  assert.equal(params.aspectRatio,'16:9');
+ }
+ assert.equal(h.calls.length,0);
+});
 
 test('completed candidate can be added repeatedly into its original bounds',async()=>{const h=harness();await h.ready();await h.nodes.generate.click();await h.ready();const record=JSON.parse(h.local.get('lk888-jobs'))[0],message={type:'import',jobId:record.id,taskId:record.tasks[0].id,index:0};h.nodes['task-webview'].message({data:JSON.stringify(message)});await h.ready();assert.equal(h.calls.length,1);assert.deepEqual(JSON.parse(JSON.stringify(h.calls[0][2])),h.capture.bounds);h.nodes['task-webview'].message({data:JSON.stringify(message)});await h.ready();assert.equal(h.calls.length,2);assert.deepEqual(JSON.parse(JSON.stringify(h.calls[1][2])),h.capture.bounds);assert.equal(h.requests.length,1);});
 test('candidate cannot be inserted into a different Photoshop document',async()=>{const h=harness({switchDocument:true});await h.ready();await h.nodes.generate.click();await h.ready();const record=JSON.parse(h.local.get('lk888-jobs'))[0];h.nodes['task-webview'].message({data:JSON.stringify({type:'import',jobId:record.id,taskId:record.tasks[0].id,index:0})});await h.ready();assert.equal(h.calls.length,0);assert.match(h.nodes.status.textContent,/原文档/);});
@@ -102,6 +113,7 @@ test('old history without an input snapshot still restores prompt and selected r
  assert.equal(h.nodes.prompt.value,record.prompt);assert.equal(h.nodes['input-webview'].lastMessage.source,null);
  assert.equal(h.nodes['task-webview'].lastMessage.selectedJobId,record.id);
  assert.match(h.nodes.status.textContent,/提示词和结果已恢复/);
+ assert.equal(h.nodes.model.value,'');
  assert.equal(h.requests.length,0);
 });
 
@@ -109,7 +121,7 @@ function oversizedHistory(){
  const source='data:image/png;base64,'+'AAAA'.repeat(3333334),id='large-draft';
  const bounds={left:120,top:90,right:420,bottom:290,width:300,height:200};
  const meta={bounds,context:{documentId:12,documentName:'sample.psd',originalBounds:{left:150,top:120,right:350,bottom:240}},documentWidth:1000,documentHeight:800,sourceImage:source,references:[{name:'small.png',data:'data:image/png;base64,Yg=='}],mask:{width:300,height:200,components:1}};
- const h=harness({manualUploads:true,jobs:[{id,captureRef:id,title:'局部改图 1',number:1,prompt:'保持构图',model:'banana-2',state:'draft',tasks:[]}],snapshots:{[id+'.json']:JSON.stringify(meta),[id+'.bin']:new Uint8Array(60000).buffer}});
+ const h=harness({manualUploads:true,jobs:[{id,captureRef:id,title:'局部改图 1',number:1,prompt:'保持构图',model:'banana-2.1',state:'draft',tasks:[]}],snapshots:{[id+'.json']:JSON.stringify(meta),[id+'.bin']:new Uint8Array(60000).buffer}});
  return {h,source,id};
 }
 
@@ -123,7 +135,7 @@ test('upload preflight scales model coordinates while preserving the original sn
  await submission;
  assert.equal(h.requests.length,1);assert.equal(h.requests[0].params.images[0],compressed);assert.equal(h.requests[0].params.images[1],'data:image/png;base64,Yg==');
  assert.match(h.requests[0].prompt,/19,18,119,78/);
- assert.equal(h.requests[0].params.aspect_ratio,'3:2');
+ assert.equal(h.requests[0].params.aspectRatio,'3:2');
  const saved=JSON.parse(h.local.get('lk888-jobs'))[0];
  assert.deepEqual(saved.imageBounds,{left:112,top:84,width:316,height:212});
  assert.equal(saved.uploadWidth,158);assert.equal(saved.uploadHeight,106);

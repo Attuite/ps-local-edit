@@ -12,7 +12,7 @@ function generationFrame(width, height, protocol, model, selected) {
  positiveDimensions(width, height);
  const options = protocol === 'openai'
   ? OPENAI_SIZES.map(value => ({value, pixels:value.split('x').map(Number)}))
-  : RATIOS.map((value, index) => ({value, pixels:/^banana-(2|pro)$/.test(model) ? BANANA_PIXELS[index] : value.split(':').map(Number)}));
+  : RATIOS.map((value, index) => ({value, pixels:/^banana-(2(?:\.1)?|pro)$/.test(model) ? BANANA_PIXELS[index] : value.split(':').map(Number)}));
  let option;
  if (selected === 'original' || selected === 'auto') {
   const distance = item => Math.abs(Math.log(width * item.pixels[1] / (height * item.pixels[0])));

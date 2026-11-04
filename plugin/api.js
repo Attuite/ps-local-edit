@@ -3,10 +3,9 @@
  * No API keys, prompts or image payloads are logged.
  */
 const MODELS = [
-  { id: 'banana-2', label: 'Nano Banana 2' },
-  { id: 'banana-pro', label: 'Nano Banana Pro' },
-  { id: 'tt-image-2', label: 'GPT Image 2' },
-  { id: 'tt-image-2.5', label: 'GPT Image 2.5' }
+  { id: 'tt-image-2.5', label: 'GPT Image 2.5' },
+  { id: 'banana-2.1', label: 'Nano Banana 2.1' },
+  { id: 'banana-pro', label: 'Nano Banana Pro' }
 ];
 function unwrap(value) { return value && value.data && typeof value.data === 'object' && !Array.isArray(value.data) ? value.data : value; }
 const DEFAULT_CONNECTION = { protocol: 'lk888', baseUrl: 'https://api.lk888.ai' };
@@ -110,6 +109,10 @@ class MediaClient {
       const results = imageSources({ data: payload.data });
       if (!results.length) throw new Error('接口没有返回图片。此模式需要同步返回 data[].b64_json 或 data[].url，不能使用聊天、Responses 或异步任务接口。请先核对平台记录，勿重复生成。');
       return { results };
+    }
+    if (model === 'banana-2.1') {
+      const { aspect_ratio = 'auto', image_size = '1K', ...rest } = params;
+      params = { ...rest, aspectRatio: aspect_ratio, imageSize: image_size };
     }
     const payload = await this.request('/v1/media/generate', { model, prompt, params: { ...params, images } }, false, onTiming);
     const taskId = unwrap(payload).task_id || payload.task_id;

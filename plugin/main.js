@@ -28,17 +28,22 @@ async function prepareUploads(images,frame){
 }
 let queue=null, pageName='edit', selectedJobId=null;
 async function saveCurrent(){const record=queue?.jobs.find(j=>j.id===selectedJobId);if(!record)return;record.prompt=$('prompt').value;record.model=$('model').value||record.model;record.quality=$('quality').value||'auto';record.ratio=$('output-size').value||'original';record.count=Number($('count').value)||1;if(capture&&sourceImage){await snapshot(record.captureRef);record.captureWidth=capture.bounds.width;record.captureHeight=capture.bounds.height;}queue.save();}
-async function newDraft(){await saveCurrent();const number=Math.max(0,...queue.jobs.map(j=>j.number||0))+1,id='region-'+Date.now();queue.jobs.unshift({id,captureRef:id,title:'局部改图 '+number,number,createdAt:Date.now(),state:'draft',tasks:[],prompt:'',count:1});selectedJobId=id;capture=null;sourceImage=null;references=[];$('prompt').value='';queue.save();show('selection-gate',true);navigatePage('edit');syncInputs();status('新建改图：请读取选区。');}
+async function newDraft(){await saveCurrent();if(usesFixedModels() && !MODELS.some(model=>model.id===$('model').value))renderModels();const number=Math.max(0,...queue.jobs.map(j=>j.number||0))+1,id='region-'+Date.now();queue.jobs.unshift({id,captureRef:id,title:'局部改图 '+number,number,createdAt:Date.now(),state:'draft',tasks:[],prompt:'',count:1});selectedJobId=id;capture=null;sourceImage=null;references=[];$('prompt').value='';queue.save();show('selection-gate',true);navigatePage('edit');syncInputs();status('新建改图：请读取选区。');}
 const fs = storage.localFileSystem;
 let capture = null, reference = null, busy = false, initialized = false;
 let job = null;
 let pauseRequested=false, modelList=MODELS.slice(), connection={...DEFAULT_CONNECTION};
 function modelStorageKey(){return connectionKey(connection)==='lk888-key'?'lk888-models':'models:'+connectionKey(connection);}
 function hiddenModelsKey(){return connectionKey(connection)==='lk888-key'?'lk888-hidden-models':'hidden-models:'+connectionKey(connection);}
+function usesFixedModels(){return connectionKey(connection)==='lk888-key';}
 function renderDropdown(id,items){const node=$(id),selected=node.value;if(!document.createElement)return;node.innerHTML='';const menu=document.createElement('sp-menu');menu.setAttribute('slot','options');items.forEach(([value,label])=>{const item=document.createElement('sp-menu-item');item.setAttribute('value',value);item.textContent=label;if(value===selected)item.setAttribute('selected','');menu.appendChild(item);});node.appendChild(menu);node.value=items.some(item=>item[0]===selected)?selected:items[0][0];}
 function loadConnectionModels(){
  modelList=connection.protocol==='openai'?[{id:'gpt-image-1.5',label:'GPT Image 1.5'}]:MODELS.slice();
- try{const saved=JSON.parse(localStorage.getItem(modelStorageKey())||'null');if(Array.isArray(saved)&&saved.length)modelList=saved;}catch(_){}
+ const fixed=usesFixedModels();
+ if(!fixed){
+  try{const saved=JSON.parse(localStorage.getItem(modelStorageKey())||'null');if(Array.isArray(saved)&&saved.length)modelList=saved;}catch(_){}
+ }
+ show('model-management',!fixed);
  renderModels();
  renderDropdown('quality',connection.protocol==='openai'?[['auto','模型默认'],['low','低'],['medium','中'],['high','高']]:[['auto','模型默认'],['1K','1K'],['2K','2K'],['4K','4K']]);
  renderDropdown('output-size',connection.protocol==='openai'?[['auto','自动匹配比例 · 补边回填'],['1024x1024','1024 × 1024'],['1536x1024','1536 × 1024'],['1024x1536','1024 × 1536']]:[['original','匹配选区比例 · 补边回填'],...RATIOS.map(value=>[value,value])]);
@@ -126,7 +131,9 @@ async function generate(){
  const prompt=$('prompt').value.trim();if(!prompt)throw new Error('请填写修改要求。');
  if(!capture || !sourceImage)await readSelection();$('prompt').value=prompt;
  if(!app.activeDocument || app.activeDocument.id!==capture.context.documentId)throw new Error('请读取当前文档选区。');
- const model=$('model').value || modelList[0]?.id;if(!model)throw new Error('请选择模型。');
+ const fixed=usesFixedModels();
+ const model=$('model').value || (!fixed && modelList[0]?.id);
+ if(!model || (fixed && !MODELS.some(item=>item.id===model)))throw new Error('请从下拉框选择当前可用的模型。');
  const params={},quality=$('quality').value||'auto',ratio=$('output-size').value||(connection.protocol==='openai'?'auto':'original');
  if(connection.protocol==='openai'){
   if(!['auto','low','medium','high'].includes(quality)||!['auto','1024x1024','1536x1024','1024x1536'].includes(ratio))throw new Error('此历史记录使用其他接口参数，请重新选择清晰度和尺寸。');
@@ -149,7 +156,7 @@ async function generate(){
  await queue.submit(record,uploads.map(image=>image.data),params);
  selectedJobId=id;syncInputs();show('selection-gate',false);navigatePage('edit');status('已提交，上传副本已按输出比例补边并按需压缩。下方显示生成状态；点击新建改图可以继续修改其他区域。');queue.tick('submitted');
 }
-async function openHistory(id){if(selectedJobId!==id)await saveCurrent();const record=queue.jobs.find(j=>j.id===id);if(!record)return;record.closed=false;selectedJobId=id;tasksUI();try{capture=await restoreCapture(record.captureRef);}catch(_){capture=null;}sourceImage=capture?.sourceImage||null;references=capture?.references||[];if(!sourceImage && capture){try{const folder=await fs.getDataFolder(),meta=JSON.parse(await(await folder.getEntry('selection.json')).read());if(meta.context.documentId===capture.context.documentId && JSON.stringify(meta.bounds)===JSON.stringify(capture.bounds))sourceImage=meta.sourceImage;}catch(_){}}$('prompt').value=record.prompt;$('model').value=record.model;$('quality').value=record.quality||'auto';$('output-size').value=record.ratio||'original';$('count').value=String(record.count||1);show('selection-gate',false);navigatePage('edit');syncInputs();status(sourceImage?'已恢复当时的输入。结果完成后点击图片添加图层。':'旧记录未保存输入缩略图；提示词和结果已恢复。');}
+async function openHistory(id){if(selectedJobId!==id)await saveCurrent();const record=queue.jobs.find(j=>j.id===id);if(!record)return;record.closed=false;selectedJobId=id;tasksUI();try{capture=await restoreCapture(record.captureRef);}catch(_){capture=null;}sourceImage=capture?.sourceImage||null;references=capture?.references||[];if(!sourceImage && capture){try{const folder=await fs.getDataFolder(),meta=JSON.parse(await(await folder.getEntry('selection.json')).read());if(meta.context.documentId===capture.context.documentId && JSON.stringify(meta.bounds)===JSON.stringify(capture.bounds))sourceImage=meta.sourceImage;}catch(_){}}$('prompt').value=record.prompt;$('model').value=usesFixedModels() && !MODELS.some(model=>model.id===record.model)?'':record.model;$('quality').value=record.quality||'auto';$('output-size').value=record.ratio||'original';$('count').value=String(record.count||1);show('selection-gate',false);navigatePage('edit');syncInputs();const message=sourceImage?'已恢复当时的输入。结果完成后点击图片添加图层。':'旧记录未保存输入缩略图；提示词和结果已恢复。';status(message+(!$('model').value && usesFixedModels()?' 再次生成前请选择模型。':''));}
 async function candidateAction(data){const record=queue.jobs.find(j=>j.id===data.jobId),task=record?.tasks.find(t=>t.id===data.taskId),result=task?.results[data.index];if(!result)throw new Error('结果不存在。');
  const {buffer,ext}=await download(result.source);
  if(data.type==='preview'){const folder=await fs.getTemporaryFolder(),file=await folder.createFile('preview-'+task.id+'-'+data.index+'.'+ext,{overwrite:true});await file.write(buffer,{format:storage.formats.binary});const error=await shell.openPath(file.nativePath);if(error)throw new Error(error);status('已在系统图片查看器打开原尺寸结果。');return;}
