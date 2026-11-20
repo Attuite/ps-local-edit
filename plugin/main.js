@@ -165,7 +165,35 @@ async function candidateAction(data){const record=queue.jobs.find(j=>j.id===data
  if(!doc || doc.id!==region.context.documentId || doc.name!==region.context.documentName)throw new Error('请切回任务对应的原文档，再点击结果图片。');
  if(doc.width!==region.documentWidth || doc.height!==region.documentHeight)throw new Error('原画布尺寸已改变，请保存原图后手动导入。');
  const folder=await fs.getTemporaryFolder(),file=await folder.createFile('result-'+Date.now()+'.'+ext,{overwrite:true});await file.write(buffer,{format:storage.formats.binary});
- await ps.placeBack('editableSo',fs.createSessionToken(file),region.bounds,region.maskData,{enabled:false,skipImageBlur:true,imageBounds:record.imageBounds});result.imported=true;queue.save();status('已等比例添加此图片并使用原选区蒙版，可再次点击图片重复添加。');
+ let sourceFile, registration;
+ const selection = region.context.originalBounds;
+ try {
+   let referenceFile;
+   if (selection && region.sourceImage?.startsWith('data:image/png;base64,')) {
+     try {
+       sourceFile = await folder.createFile('source-' + Date.now() + '.png', {overwrite: true});
+       await sourceFile.write(fileUtils.base64ToArrayBuffer(region.sourceImage.slice('data:image/png;base64,'.length)), {format: storage.formats.binary});
+       referenceFile = sourceFile;
+     } catch (error) {
+       console.warn('Could not prepare source image for registration:', error);
+     }
+   }
+   registration = await ps.placeBack(
+     'editableSo', fs.createSessionToken(file), region.bounds, region.maskData,
+     {enabled: false, skipImageBlur: true, imageBounds: record.imageBounds},
+     {sourceFile: referenceFile, selection, documentId: doc.id, documentWidth: region.documentWidth, documentHeight: region.documentHeight}
+   );
+ } finally {
+   if (sourceFile) {
+     try { await sourceFile.delete(); }
+     catch (error) { console.warn('Could not remove temporary source image:', error); }
+   }
+ }
+ result.imported = true;
+ queue.save();
+ if (registration?.adjusted) status('已按原图结构校正缩放和位置，并添加图层。');
+ else if (registration) status('已核对原图结构并按原位添加图层。');
+ else status('已按任务坐标添加图层。对应结构不足，无法确认对齐，可在 Photoshop 中微调。');
 }
 async function readSelection() {
   if(queue && (!selectedJobId || queue.jobs.find(j=>j.id===selectedJobId)?.tasks.length)) await newDraft();

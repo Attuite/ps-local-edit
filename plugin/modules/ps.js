@@ -6,6 +6,7 @@
 const { app, action, core, imaging, constants } = require('photoshop');
 const settings = require('./settings.js');
 const { uniformScale } = require('../image-geometry');
+const { SAMPLE_SIZE, registerResult } = require('../image-registration');
 
 /**
  * Check if there is an active document
@@ -1007,7 +1008,7 @@ function resolveMaskFeather(buffer, width, height, freeSides, overrides = {}) {
  * @param {object} [featherOptions={}] - Feather configuration overrides
  * @returns {Promise<{psImageData: PhotoshopImageData, feather: {radius: number, offset: number}, maskWidth: number, maskHeight: number, maskBuffer: Uint8Array}>}
  */
-async function prepareMaskBufferAndImageData(doc, bounds, maskImageData, featherOptions = {}) {
+async function prepareMaskBufferAndImageData(doc, bounds, maskImageData, featherOptions = {}, coverage = null) {
     let maskBuffer, maskWidth, maskHeight;
 
     if (maskImageData.imageData instanceof Uint8Array) {
@@ -1049,6 +1050,8 @@ async function prepareMaskBufferAndImageData(doc, bounds, maskImageData, feather
             : erodeMask(maskBuffer, maskWidth, maskHeight, -feather.offset);
     }
 
+    if (coverage) maskBuffer = fadeUncoveredEdges(maskBuffer, maskWidth, maskHeight, bounds, coverage);
+
     // Create proper PhotoshopImageData for the mask (grayscale)
     const psImageData = await imaging.createImageDataFromBuffer(maskBuffer, {
         width: maskWidth,
@@ -1060,6 +1063,29 @@ async function prepareMaskBufferAndImageData(doc, bounds, maskImageData, feather
     });
 
     return { psImageData, feather, maskWidth, maskHeight, maskBuffer };
+}
+
+// A model crop can leave a narrow strip of the selection uncovered after
+// alignment. Blend to the existing document along those image edges only.
+function fadeUncoveredEdges(buffer, width, height, bounds, {image, selection}) {
+    const clippedLeft = image.left > selection.left, clippedTop = image.top > selection.top;
+    const clippedRight = image.right < selection.right, clippedBottom = image.bottom < selection.bottom;
+    if (!clippedLeft && !clippedRight && !clippedTop && !clippedBottom) return buffer;
+    const feather = Math.min(16, Math.max(2, Math.round(Math.min(width, height) * 0.01)));
+    const ramp = distance => Math.max(0, Math.min(1, distance / feather));
+    const horizontal = new Float32Array(width);
+    for (let x = 0; x < width; x++) {
+        const center = bounds.left + x + 0.5;
+        horizontal[x] = Math.min(clippedLeft ? ramp(center - image.left) : 1, clippedRight ? ramp(image.right - center) : 1);
+    }
+    const mask = new Uint8Array(buffer.length);
+    for (let y = 0; y < height; y++) {
+        const center = bounds.top + y + 0.5;
+        const vertical = Math.min(clippedTop ? ramp(center - image.top) : 1, clippedBottom ? ramp(image.bottom - center) : 1);
+        const row = y * width;
+        for (let x = 0; x < width; x++) mask[row + x] = Math.round(buffer[row + x] * Math.min(horizontal[x], vertical));
+    }
+    return mask;
 }
 
 /**
@@ -1180,9 +1206,10 @@ async function restoreSelection(doc, bounds, maskImageData, featherOptions = {})
  *        for the defaults and the meaning of each field. Pass `{ enabled: false }` to place
  *        the mask with a hard edge, as it was before this option existed.
  */
-async function placeBack(placeBackMode, fileToken, bounds, maskImageData, featherOptions = {}) {
+async function placeBack(placeBackMode, fileToken, bounds, maskImageData, featherOptions = {}, registrationInput = null) {
     const doc = app.activeDocument;
     const imageBounds = featherOptions.imageBounds || bounds;
+    let registration = null;
 
     const isSelectionOnly = placeBackMode === 'selection';
     const applyPlaceBackAsMask = placeBackMode === 'mask';
@@ -1190,6 +1217,14 @@ async function placeBack(placeBackMode, fileToken, bounds, maskImageData, feathe
 
     await core.executeAsModal(async (executionContext) => {
         const hostControl = executionContext.hostControl;
+        if (registrationInput) {
+            if (doc?.id !== registrationInput.documentId || app.activeDocument?.id !== registrationInput.documentId) {
+                throw new Error('请切回任务对应的原文档，再点击结果图片。');
+            }
+            if (doc.width !== registrationInput.documentWidth || doc.height !== registrationInput.documentHeight) {
+                throw new Error('原画布尺寸已改变，请保存原图后手动导入。');
+            }
+        }
         const documentID = doc.id;
 
         // Suspend history for single undo
@@ -1222,9 +1257,10 @@ async function placeBack(placeBackMode, fileToken, bounds, maskImageData, feathe
                 // useful when pasted image is larger than the document. 
                 // it prevents automatic resizing of pasted image
                 console.log("Using High-Res Editable Smart Object path...");
-                const result = await placeAsEditableSmartObject(fileToken, imageBounds, doc);
+                const result = await placeAsEditableSmartObject(fileToken, imageBounds, doc, bounds, registrationInput);
                 placedImageWidth = result.placedImageWidth;
                 placedImageHeight = result.placedImageHeight;
+                registration = result.registration;
             } else {
                 // ORIGINAL PATH: Standard Place (may scale down, but honors false flag)
                 console.log("Using original placement path...");
@@ -1321,9 +1357,14 @@ async function placeBack(placeBackMode, fileToken, bounds, maskImageData, feathe
             if (maskImageData && !applyPlaceBackAsMask) {
                 try {
                     console.log("Step 4: Applying mask...");
-                    const maskPrep = await prepareMaskBufferAndImageData(doc, bounds, maskImageData, featherOptions);
                     const updatedLayer = doc.activeLayers[0];
-                    await applyLayerMaskToLayer(doc, updatedLayer, maskPrep.psImageData, bounds, maskPrep.maskWidth, maskPrep.maskHeight, maskPrep.feather.radius);
+                    const coverage = registration?.adjusted ? {image: updatedLayer.bounds, selection: registrationInput.selection} : null;
+                    const maskPrep = await prepareMaskBufferAndImageData(doc, bounds, maskImageData, featherOptions, coverage);
+                    try {
+                        await applyLayerMaskToLayer(doc, updatedLayer, maskPrep.psImageData, bounds, maskPrep.maskWidth, maskPrep.maskHeight, maskPrep.feather.radius);
+                    } finally {
+                        maskPrep.psImageData.dispose();
+                    }
                 } catch (maskError) {
                     console.error("Step 4 Failed (Mask):", maskError);
                     throw new Error(`Failed to apply mask: ${maskError.message}`);
@@ -1387,6 +1428,50 @@ async function placeBack(placeBackMode, fileToken, bounds, maskImageData, feathe
         }
 
     }, { commandName: isSelectionOnly ? "Restore Selection FromPS" : "Place Back FromPS/ToPS" });
+    return registration;
+}
+
+async function getAlignmentSample(doc, layer) {
+    const bounds = layer ? layer.boundsNoEffects : {left: 0, top: 0, right: doc.width, bottom: doc.height};
+    const width = bounds.right - bounds.left, height = bounds.bottom - bounds.top;
+    const size = Math.min(SAMPLE_SIZE, Math.max(width, height));
+    const {imageData} = await imaging.getPixels({
+        documentID: doc.id,
+        ...(layer ? {layerID: layer.id} : {}),
+        sourceBounds: bounds,
+        targetSize: width >= height ? {width: size} : {height: size},
+        colorSpace: 'RGB',
+        colorProfile: 'sRGB IEC61966-2.1',
+        componentSize: 8,
+        applyAlpha: true
+    });
+    try {
+        const rgb = await imageData.getData({chunky: true});
+        const pixels = new Uint8Array(imageData.width * imageData.height);
+        for (let i = 0, index = 0; i < pixels.length; i++, index += imageData.components) {
+            pixels[i] = (77 * rgb[index] + 150 * rgb[index + 1] + 29 * rgb[index + 2]) >> 8;
+        }
+        return {width: imageData.width, height: imageData.height, pixels};
+    } finally {
+        imageData.dispose();
+    }
+}
+
+async function readAlignmentReference(file, capture, targetDoc) {
+    if (!file) return null;
+    let referenceDoc;
+    try {
+        referenceDoc = await app.open(file);
+        if (referenceDoc.width === capture.width && referenceDoc.height === capture.height) {
+            return await getAlignmentSample(referenceDoc);
+        }
+    } catch (error) {
+        console.warn('Could not read source image for registration:', error);
+    } finally {
+        if (referenceDoc) await referenceDoc.closeWithoutSaving();
+        app.activeDocument = targetDoc;
+    }
+    return null;
 }
 
 /**
@@ -1397,15 +1482,17 @@ async function placeBack(placeBackMode, fileToken, bounds, maskImageData, feathe
  * @param {string} fileToken - File path or token for the image
  * @param {object} bounds - Target bounds in the destination document
  * @param {object} targetDoc - The destination Photoshop document object
- * @returns {Promise<{placedImageWidth: number, placedImageHeight: number}>}
+ * @param {object} capture - Bounds of the saved source without upload padding
+ * @param {object|null} registrationInput - Saved source file and selection bounds
  */
-async function placeAsEditableSmartObject(fileToken, bounds, targetDoc) {
-    const { app, core, action } = require("photoshop");
+async function placeAsEditableSmartObject(fileToken, bounds, targetDoc, capture, registrationInput) {
+    const { app, action } = require("photoshop");
 
     console.log("Creating temporary document for high-res Smart Object placement...");
     let tempDoc = null;
 
     try {
+        const source = await readAlignmentReference(registrationInput?.sourceFile, capture, targetDoc);
         // Create an 8000x8000 temporary document
         tempDoc = await app.documents.add({
             width: 8000,
@@ -1435,6 +1522,20 @@ async function placeAsEditableSmartObject(fileToken, bounds, targetDoc) {
                 ]
             }
         ], { synchronousExecution: true });
+
+        let registration = null;
+        if (source) {
+            try {
+                const placed = tempDoc.activeLayers[0];
+                const native = placed.boundsNoEffects;
+                // Preserve the original ratio check before fitting a correction.
+                uniformScale(native.right - native.left, native.bottom - native.top, bounds);
+                const result = await getAlignmentSample(tempDoc, placed);
+                registration = registerResult(source, result, capture, bounds, registrationInput.selection);
+            } catch (error) {
+                console.warn('Could not register result:', error);
+            }
+        }
 
         // Step 3: Convert to Smart Object
         await action.batchPlay([
@@ -1476,11 +1577,12 @@ async function placeAsEditableSmartObject(fileToken, bounds, targetDoc) {
         targetDoc.activeLayers = [duplicatedLayer];
 
         // Step 7: Calculate Transformation bounds
-        const dimensions = await transformLayerToBounds(duplicatedLayer, bounds);
+        const dimensions = await transformLayerToBounds(duplicatedLayer, registration?.bounds || bounds, bounds);
 
         return {
             placedImageWidth: dimensions.width,
-            placedImageHeight: dimensions.height
+            placedImageHeight: dimensions.height,
+            registration
         };
 
     } catch (error) {
@@ -1612,9 +1714,10 @@ async function applySmartObjectNativeMask(parentDoc) {
  * Scale a layer uniformly and center it in matching target bounds; reject mismatches.
  * @param {object} layer - The layer to transform
  * @param {object} bounds - The target bounds {left, top, width, height}
+ * @param {object} nominalBounds - Original frame used to check the response aspect ratio
  * @returns {Promise<{width: number, height: number}>} Original native dimensions of the layer before transform
  */
-async function transformLayerToBounds(layer, bounds) {
+async function transformLayerToBounds(layer, bounds, nominalBounds = bounds) {
     const { action } = require("photoshop");
 
     const layerBounds = layer.bounds;
@@ -1624,7 +1727,7 @@ async function transformLayerToBounds(layer, bounds) {
     console.log(`Layer native bounds: w=${currentWidth}, h=${currentHeight}`);
     console.log(`Target bounds: w=${bounds.width}, h=${bounds.height}`);
 
-    const scale = uniformScale(currentWidth, currentHeight, bounds);
+    const scale = uniformScale(currentWidth, currentHeight, nominalBounds) * (bounds.width / nominalBounds.width);
 
     // Step 1: Scale
     await action.batchPlay([
