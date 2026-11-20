@@ -1432,13 +1432,15 @@ async function placeBack(placeBackMode, fileToken, bounds, maskImageData, feathe
 }
 
 async function getAlignmentSample(doc, layer) {
-    const bounds = layer ? layer.boundsNoEffects : {left: 0, top: 0, right: doc.width, bottom: doc.height};
-    const width = bounds.right - bounds.left, height = bounds.bottom - bounds.top;
+    const {left, top, right, bottom} = layer
+        ? layer.boundsNoEffects
+        : {left: 0, top: 0, right: doc.width, bottom: doc.height};
+    const width = right - left, height = bottom - top;
     const size = Math.min(SAMPLE_SIZE, Math.max(width, height));
     const {imageData} = await imaging.getPixels({
         documentID: doc.id,
         ...(layer ? {layerID: layer.id} : {}),
-        sourceBounds: bounds,
+        sourceBounds: {left, top, right, bottom},
         targetSize: width >= height ? {width: size} : {height: size},
         colorSpace: 'RGB',
         colorProfile: 'sRGB IEC61966-2.1',
